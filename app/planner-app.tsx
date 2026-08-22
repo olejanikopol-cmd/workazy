@@ -59,7 +59,8 @@ export default function PlannerApp() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editorText, setEditorText] = useState("1. ");
-  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [menuPlacement, setMenuPlacement] = useState<"up" | "down">("down");
 
   const dayTasks = useMemo(() => tasks.filter((task) => task.date === selectedDate), [tasks, selectedDate]);
   const completed = dayTasks.filter((task) => task.completed).length;
@@ -80,11 +81,33 @@ export default function PlannerApp() {
     if (hydrated) savePlannerState({ tasks, goals, entries, events });
   }, [tasks, goals, entries, events, hydrated]);
 
+  useEffect(() => {
+    if (!openMenuId) return;
+
+    function closeOnOutsideClick(event: PointerEvent) {
+      if (event.target instanceof HTMLElement && event.target.closest(".task-menu")) return;
+      setOpenMenuId(null);
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpenMenuId(null);
+    }
+
+    window.addEventListener("pointerdown", closeOnOutsideClick);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsideClick);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openMenuId]);
+
   function toggleTask(id: string) {
+    setOpenMenuId(null);
     setTasks((current) => current.map((task) => task.id === id ? { ...task, completed: !task.completed } : task));
   }
 
   function removeTask(id: string) {
+    setOpenMenuId(null);
     setTasks((current) => current.filter((task) => task.id !== id));
   }
 
@@ -93,6 +116,7 @@ export default function PlannerApp() {
     if (!current) return;
     const next = window.prompt("Изменить пункт", current.title)?.trim();
     if (next) setTasks((items) => items.map((task) => task.id === id ? { ...task, title: next } : task));
+    setOpenMenuId(null);
   }
 
   function moveTask(id: string, direction: -1 | 1) {
@@ -107,19 +131,38 @@ export default function PlannerApp() {
       [copy[from], copy[to]] = [copy[to], copy[from]];
       return copy;
     });
+    setOpenMenuId(null);
   }
 
-  function moveOnDrop(targetId: string) {
-    if (!draggedId || draggedId === targetId) return;
-    setTasks((current) => {
-      const copy = [...current];
-      const from = copy.findIndex((task) => task.id === draggedId);
-      const to = copy.findIndex((task) => task.id === targetId);
-      const [item] = copy.splice(from, 1);
-      copy.splice(to, 0, item);
-      return copy;
-    });
-    setDraggedId(null);
+  function handleTaskCardClick(event: React.MouseEvent<HTMLElement>, id: string) {
+    if (event.target instanceof HTMLElement && event.target.closest("button, input, label, .task-menu")) return;
+    toggleTask(id);
+  }
+
+  function handleTaskCardKeyDown(event: React.KeyboardEvent<HTMLElement>, id: string) {
+    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    toggleTask(id);
+  }
+
+  function placeMenu(trigger: Element) {
+    const rect = trigger.getBoundingClientRect();
+    const bottomNavReserve = 116;
+    const menuHeight = 218;
+    const spaceBelow = window.innerHeight - rect.bottom - bottomNavReserve;
+    const spaceAbove = rect.top;
+    setMenuPlacement(spaceBelow < menuHeight && spaceAbove > spaceBelow ? "up" : "down");
+  }
+
+  function toggleTaskMenu(id: string, event: React.MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    if (openMenuId === id) {
+      setOpenMenuId(null);
+      return;
+    }
+
+    placeMenu(event.currentTarget);
+    setOpenMenuId(id);
   }
 
   function handleEditorKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -173,19 +216,20 @@ export default function PlannerApp() {
 
           <div className="task-list">
             {dayTasks.map((task, index) => (
-              <article key={task.id} className={`task-card ${task.completed ? "completed" : ""}`} draggable onDragStart={() => setDraggedId(task.id)} onDragOver={(e) => e.preventDefault()} onDrop={() => moveOnDrop(task.id)}>
-                <button className="task-check" aria-label={task.completed ? `Вернуть «${task.title}»` : `Выполнить «${task.title}»`} onClick={() => toggleTask(task.id)}>{task.completed && <Icon name="check" size={16} />}</button>
+              <article key={task.id} className={`task-card ${task.completed ? "completed" : ""} ${openMenuId === task.id ? "menu-open" : ""}`} role="checkbox" aria-checked={task.completed} tabIndex={0} onClick={(event) => handleTaskCardClick(event, task.id)} onKeyDown={(event) => handleTaskCardKeyDown(event, task.id)}>
+                <button className="task-check" aria-label={task.completed ? `Вернуть «${task.title}»` : `Выполнить «${task.title}»`} onClick={(event) => { event.stopPropagation(); toggleTask(task.id); }}>{task.completed && <Icon name="check" size={16} />}</button>
                 <div className="task-body"><span className="task-index">{String(index + 1).padStart(2, "0")}</span><p>{task.title}</p></div>
-                <details className="task-menu">
-                  <summary aria-label={`Действия с пунктом «${task.title}»`}><Icon name="more" size={20} /></summary>
-                  <div className="task-menu-popover">
-                    <button onClick={() => editTask(task.id)}>Изменить</button>
-                    <button onClick={() => moveTask(task.id, -1)} disabled={index === 0}>Выше</button>
-                    <button onClick={() => moveTask(task.id, 1)} disabled={index === dayTasks.length - 1}>Ниже</button>
-                    <label>Перенести<input type="date" value={task.date} onChange={(e) => setTasks((items) => items.map((item) => item.id === task.id ? { ...item, date: e.target.value } : item))} /></label>
-                    <button className="danger" onClick={() => removeTask(task.id)}>Удалить</button>
+                <div className={`task-menu ${openMenuId === task.id ? `open drop-${menuPlacement}` : ""}`}>
+                  <button className="task-menu-trigger" type="button" aria-label={`Действия с пунктом «${task.title}»`} aria-expanded={openMenuId === task.id} onClick={(event) => toggleTaskMenu(task.id, event)}><Icon name="more" size={20} /></button>
+                  {openMenuId === task.id && <div className="task-menu-popover" role="menu" onClick={(event) => event.stopPropagation()}>
+                    <button type="button" onClick={() => editTask(task.id)}>Изменить</button>
+                    <button type="button" onClick={() => moveTask(task.id, -1)} disabled={index === 0}>Выше</button>
+                    <button type="button" onClick={() => moveTask(task.id, 1)} disabled={index === dayTasks.length - 1}>Ниже</button>
+                    <label>Перенести<input type="date" value={task.date} onChange={(e) => { setTasks((items) => items.map((item) => item.id === task.id ? { ...item, date: e.target.value } : item)); setOpenMenuId(null); }} /></label>
+                    <button type="button" className="danger" onClick={() => removeTask(task.id)}>Удалить</button>
                   </div>
-                </details>
+                  }
+                </div>
               </article>
             ))}
             {!dayTasks.length && <div className="empty-card"><Icon name="spark" size={28} /><h3>День пока свободен</h3><p>Добавь план одним быстрым списком.</p></div>}
