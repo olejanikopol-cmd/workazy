@@ -1,5 +1,6 @@
 name: Hourly Workazy reminder
 
+# Uses GitHub OIDC, so no repository secret is required.
 on:
   schedule:
     - cron: "0 * * * *"
