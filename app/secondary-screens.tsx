@@ -26,6 +26,11 @@ export function GoalsScreen({ goals, setGoals }: { goals: Goal[]; setGoals: Disp
     setAddOpen(false);
   }
 
+  function removeGoal(goal: Goal) {
+    if (!window.confirm(`Удалить цель «${goal.title}»?`)) return;
+    setGoals((current) => current.filter((item) => item.id !== goal.id));
+  }
+
   return <section className="screen secondary-screen" aria-labelledby="goals-title">
     <div className="eyebrow"><span className="status-dot" /> Направление</div>
     <div className="secondary-title"><div><h1 id="goals-title">Цели</h1><p>Не список дел. То, куда ты идёшь.</p></div><button className="round-add" onClick={() => setAddOpen(true)} aria-label="Добавить цель"><Icon name="plus" /></button></div>
@@ -41,7 +46,7 @@ export function GoalsScreen({ goals, setGoals }: { goals: Goal[]; setGoals: Disp
 
     <div className="goal-list">
       {visible.map((goal) => <article className={`goal-card ${goal.completed ? "completed" : ""}`} key={goal.id}>
-        <div className="goal-card-head"><span>{periodLabels[goal.period]} · до {new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" }).format(new Date(`${goal.deadline}T12:00:00`))}</span><button onClick={() => setGoals((items) => items.map((item) => item.id === goal.id ? { ...item, completed: !item.completed, progress: item.completed ? item.progress : 100 } : item))} aria-label={goal.completed ? "Вернуть цель в работу" : "Завершить цель"}><Icon name="check" size={16} /></button></div>
+        <div className="goal-card-head"><span>{periodLabels[goal.period]} · до {new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" }).format(new Date(`${goal.deadline}T12:00:00`))}</span><div className="goal-card-actions"><button className="goal-delete" onClick={() => removeGoal(goal)} aria-label={`Удалить цель «${goal.title}»`}><Icon name="close" size={16} /></button><button className="goal-complete" onClick={() => setGoals((items) => items.map((item) => item.id === goal.id ? { ...item, completed: !item.completed, progress: item.completed ? item.progress : 100 } : item))} aria-label={goal.completed ? "Вернуть цель в работу" : "Завершить цель"}><Icon name="check" size={16} /></button></div></div>
         <h2>{goal.title}</h2>
         {goal.description && <p>{goal.description}</p>}
         <div className="goal-progress-copy"><span>Прогресс</span><strong>{goal.progress}%</strong></div>
@@ -79,6 +84,12 @@ export function JournalScreen({ entries, setEntries }: { entries: JournalEntry[]
     setTitle(""); setBody(""); setMood(""); setTags(""); setMode("history");
   }
 
+  function removeEntry(entry: JournalEntry) {
+    const label = entry.title?.trim() || displayDate(entry.date);
+    if (!window.confirm(`Удалить запись «${label}»?`)) return;
+    setEntries((current) => current.filter((item) => item.id !== entry.id));
+  }
+
   return <section className="screen secondary-screen journal-screen" aria-labelledby="journal-title">
     <div className="eyebrow"><span className="status-dot" /> Личное пространство</div>
     <div className="secondary-title"><div><h1 id="journal-title">Дневник</h1><p>Место, где не нужно быть продуктивным.</p></div><button className="icon-button" onClick={() => setExportOpen(true)} aria-label="Экспорт дневника"><Icon name="download" size={19} /></button></div>
@@ -94,7 +105,7 @@ export function JournalScreen({ entries, setEntries }: { entries: JournalEntry[]
     </div> : <div className="journal-history">
       <label className="search-box"><Icon name="search" size={18} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Найти в записях" /></label>
       <div className="entry-list">{filtered.map((entry) => <article className="entry-card" key={entry.id}>
-        <div className="entry-meta"><span>{displayDate(entry.date)}</span>{entry.mood && <span className="mood-badge">{entry.mood}</span>}</div>
+        <div className="entry-meta"><span>{displayDate(entry.date)}</span><div className="entry-meta-actions">{entry.mood && <span className="mood-badge">{entry.mood}</span>}<button className="entry-delete" onClick={() => removeEntry(entry)} aria-label={`Удалить запись «${entry.title?.trim() || displayDate(entry.date)}»`}><Icon name="close" size={16} /></button></div></div>
         {entry.title && <h2>{entry.title}</h2>}<p>{entry.body}</p>
         {!!entry.tags.length && <div className="entry-tags">{entry.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
       </article>)}</div>
