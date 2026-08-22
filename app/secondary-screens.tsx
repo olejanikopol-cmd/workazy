@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { CSSProperties, Dispatch, FormEvent, SetStateAction } from "react";
-import type { CalendarEvent, Goal, GoalPeriod, JournalEntry, PlanTask } from "@/lib/types";
+import type { CalendarEvent, Goal, GoalPeriod, Idea, IdeaCategory, IdeaStatus, JournalEntry, PlanTask } from "@/lib/types";
 import { todayIso } from "@/lib/planner-data";
 import { Icon, displayDate, uid } from "./planner-app";
 
@@ -187,6 +187,67 @@ export function ProgressScreen({ tasks, goals, entries }: { tasks: PlanTask[]; g
     </div>
     <section className="reflection-card"><Icon name="spark" size={22} /><div><span>Наблюдение</span><p>Больше всего задач закрывается в дни, когда план содержит не больше пяти пунктов.</p></div></section>
     <p className="no-ai-note">Статистика считается только по твоим данным — без AI-анализа.</p>
+  </section>;
+}
+
+const ideaCategoryLabels: Record<IdeaCategory, string> = { thought: "Мысль", want: "Хочуха", project: "Проект", purchase: "Покупка", someday: "Когда-нибудь" };
+
+const ideaStatusLabels: Record<IdeaStatus, string> = { new: "Новая", thinking: "Думаю", plan: "В план", done: "Сделано", archive: "Архив" };
+
+export function IdeasScreen({ ideas, setIdeas }: { ideas: Idea[]; setIdeas: Dispatch<SetStateAction<Idea[]>> }) {
+  const [categoryFilter, setCategoryFilter] = useState<IdeaCategory | "all">("all");
+  const [statusFilter, setStatusFilter] = useState<IdeaStatus | "all">("all");
+  const [addOpen, setAddOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState<IdeaCategory>("thought");
+  const visible = ideas.filter((idea) => (categoryFilter === "all" || idea.category === categoryFilter) && (statusFilter === "all" || idea.status === statusFilter));
+
+  function addIdea(event: FormEvent) {
+    event.preventDefault();
+    if (!title.trim()) return;
+    const now = todayIso();
+    setIdeas((current) => [{ id: uid("idea"), title: title.trim(), description: description.trim(), category, status: "new", createdAt: now, updatedAt: now }, ...current]);
+    setTitle("");
+    setDescription("");
+    setAddOpen(false);
+  }
+
+  return <section className="screen secondary-screen" aria-labelledby="ideas-title">
+    <div className="eyebrow"><span className="status-dot" /> Копилка идей</div>
+    <div className="secondary-title"><div><h1 id="ideas-title">Идеи</h1><p>Мысли, хочухи и проекты — всё в одном месте.</p></div><button className="round-add" onClick={() => setAddOpen(true)} aria-label="Добавить идею"><Icon name="plus" /></button></div>
+
+    <div className="mood-row idea-filters"><span>Категория</span><div>
+      <button className={categoryFilter === "all" ? "active" : ""} onClick={() => setCategoryFilter("all")}>Все</button>
+      {(Object.keys(ideaCategoryLabels) as IdeaCategory[]).map((value) => <button key={value} className={categoryFilter === value ? "active" : ""} onClick={() => setCategoryFilter(categoryFilter === value ? "all" : value)}>{ideaCategoryLabels[value]}</button>)}
+    </div></div>
+
+    <div className="mood-row idea-filters"><span>Статус</span><div>
+      <button className={statusFilter === "all" ? "active" : ""} onClick={() => setStatusFilter("all")}>Все</button>
+      {(Object.keys(ideaStatusLabels) as IdeaStatus[]).map((value) => <button key={value} className={statusFilter === value ? "active" : ""} onClick={() => setStatusFilter(statusFilter === value ? "all" : value)}>{ideaStatusLabels[value]}</button>)}
+    </div></div>
+
+    <div className="idea-list">
+      {visible.map((idea) => <article className="idea-card" key={idea.id}>
+        <div className="idea-card-head"><span>{ideaCategoryLabels[idea.category]}</span><button onClick={() => setIdeas((items) => items.filter((item) => item.id !== idea.id))} aria-label={`Удалить идею «${idea.title}»`}><Icon name="close" size={16} /></button></div>
+        <h2>{idea.title}</h2>
+        {idea.description && <p>{idea.description}</p>}
+        <select className="idea-status" aria-label={`Статус идеи «${idea.title}»`} value={idea.status} onChange={(e) => setIdeas((items) => items.map((item) => item.id === idea.id ? { ...item, status: e.target.value as IdeaStatus, updatedAt: todayIso() } : item))}>
+          {(Object.keys(ideaStatusLabels) as IdeaStatus[]).map((value) => <option key={value} value={value}>{ideaStatusLabels[value]}</option>)}
+        </select>
+      </article>)}
+      {!visible.length && <div className="empty-card"><Icon name="spark" size={30} /><h3>Пока пусто</h3><p>Запиши первую идею — она не потеряется.</p></div>}
+    </div>
+
+    {addOpen && <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && setAddOpen(false)}>
+      <form className="compact-sheet" onSubmit={addIdea}>
+        <div className="modal-handle" /><div className="editor-head"><div><span>Копилка</span><h2>Новая идея</h2></div><button type="button" className="icon-button" onClick={() => setAddOpen(false)}><Icon name="close" /></button></div>
+        <label className="field"><span>Что за идея</span><input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Например, хочу механическую клавиатуру" /></label>
+        <label className="field"><span>Описание</span><textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Необязательно" /></label>
+        <label className="field"><span>Категория</span><select value={category} onChange={(e) => setCategory(e.target.value as IdeaCategory)}>{(Object.keys(ideaCategoryLabels) as IdeaCategory[]).map((value) => <option key={value} value={value}>{ideaCategoryLabels[value]}</option>)}</select></label>
+        <button className="sheet-submit">Записать идею</button>
+      </form>
+    </div>}
   </section>;
 }
 

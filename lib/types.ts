@@ -1,4 +1,4 @@
-export type AppTab = "plan" | "goals" | "journal" | "calendar" | "progress";
+export type AppTab = "plan" | "goals" | "journal" | "calendar" | "progress" | "ideas";
 
 export type PlanTask = {
   id: string;
@@ -36,4 +36,18 @@ export type CalendarEvent = {
   time?: string;
   note?: string;
   reminder?: string;
+};
+
+export type IdeaCategory = "thought" | "want" | "project" | "purchase" | "someday";
+
+export type IdeaStatus = "new" | "thinking" | "plan" | "done" | "archive";
+
+export type Idea = {
+  id: string;
+  title: string;
+  description?: string;
+  category: IdeaCategory;
+  status: IdeaStatus;
+  createdAt: string;
+  updatedAt: string;
 };

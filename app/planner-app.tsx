@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { AppTab, CalendarEvent, Goal, JournalEntry, PlanTask } from "@/lib/types";
-import { initialEntries, initialEvents, initialGoals, initialTasks, todayIso } from "@/lib/planner-data";
+import type { AppTab, CalendarEvent, Goal, Idea, JournalEntry, PlanTask } from "@/lib/types";
+import { initialEntries, initialEvents, initialGoals, initialIdeas, initialTasks, todayIso } from "@/lib/planner-data";
 import { loadPlannerState, savePlannerState } from "@/lib/planner-storage";
-import { CalendarScreen, GoalsScreen, JournalScreen, ProgressScreen, SettingsSheet } from "./secondary-screens";
+import { CalendarScreen, GoalsScreen, IdeasScreen, JournalScreen, ProgressScreen, SettingsSheet } from "./secondary-screens";
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: "plan", label: "План", icon: "check" },
@@ -12,6 +12,7 @@ const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: "journal", label: "Дневник", icon: "book" },
   { id: "calendar", label: "Календарь", icon: "calendar" },
   { id: "progress", label: "Прогресс", icon: "chart" },
+  { id: "ideas", label: "Идеи", icon: "spark" },
 ];
 
 export function Icon({ name, size = 22 }: { name: string; size?: number }) {
@@ -54,6 +55,7 @@ export default function PlannerApp() {
   const [goals, setGoals] = useState<Goal[]>(initialGoals);
   const [entries, setEntries] = useState<JournalEntry[]>(initialEntries);
   const [events, setEvents] = useState<CalendarEvent[]>(initialEvents);
+  const [ideas, setIdeas] = useState<Idea[]>(initialIdeas);
   const [hydrated, setHydrated] = useState(false);
   const [selectedDate, setSelectedDate] = useState(todayIso());
   const [editorOpen, setEditorOpen] = useState(false);
@@ -73,13 +75,14 @@ export default function PlannerApp() {
       if (Array.isArray(saved.goals)) setGoals(saved.goals as Goal[]);
       if (Array.isArray(saved.entries)) setEntries(saved.entries as JournalEntry[]);
       if (Array.isArray(saved.events)) setEvents(saved.events as CalendarEvent[]);
+      if (Array.isArray(saved.ideas)) setIdeas(saved.ideas as Idea[]);
     }
     setHydrated(true);
   }, []);
 
   useEffect(() => {
-    if (hydrated) savePlannerState({ tasks, goals, entries, events });
-  }, [tasks, goals, entries, events, hydrated]);
+    if (hydrated) savePlannerState({ tasks, goals, entries, events, ideas });
+  }, [tasks, goals, entries, events, ideas, hydrated]);
 
   useEffect(() => {
     if (!openMenuId) return;
@@ -242,6 +245,7 @@ export default function PlannerApp() {
         {activeTab === "journal" && <JournalScreen entries={entries} setEntries={setEntries} />}
         {activeTab === "calendar" && <CalendarScreen tasks={tasks} events={events} setEvents={setEvents} selectedDate={selectedDate} setSelectedDate={setSelectedDate} />}
         {activeTab === "progress" && <ProgressScreen tasks={tasks} goals={goals} entries={entries} />}
+        {activeTab === "ideas" && <IdeasScreen ideas={ideas} setIdeas={setIdeas} />}
 
         <nav className="bottom-nav" aria-label="Основная навигация">
           {tabs.map((tab) => <button key={tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => setActiveTab(tab.id)}><Icon name={tab.icon} /><span>{tab.label}</span></button>)}

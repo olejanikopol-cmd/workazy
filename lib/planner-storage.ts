@@ -5,6 +5,7 @@ export type StoredPlannerState = {
   goals: unknown[];
   entries: unknown[];
   events: unknown[];
+  ideas: unknown[];
 };
 
 export function loadPlannerState(): StoredPlannerState | null {

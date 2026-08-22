@@ -1,4 +1,4 @@
-import type { CalendarEvent, Goal, JournalEntry, PlanTask } from "./types";
+import type { CalendarEvent, Goal, Idea, JournalEntry, PlanTask } from "./types";
 
 export const todayIso = () => new Date().toISOString().slice(0, 10);
 
@@ -24,4 +24,10 @@ export const initialEntries: JournalEntry[] = [
 export const initialEvents: CalendarEvent[] = [
   { id: "event-1", title: "Тренировка", date: todayIso(), time: "19:00", reminder: "За 30 минут" },
   { id: "event-2", title: "Созвон по проекту", date: "2026-08-25", time: "18:30", reminder: "За 1 час" },
+];
+
+export const initialIdeas: Idea[] = [
+  { id: "idea-1", title: "Механическая клавиатура", description: "Тихие свитчи, чтобы печатать с удовольствием.", category: "purchase", status: "thinking", createdAt: "2026-08-10", updatedAt: "2026-08-10" },
+  { id: "idea-2", title: "Свой мини-продукт", description: "Собрать прототип за выходные и показать друзьям.", category: "project", status: "plan", createdAt: "2026-08-15", updatedAt: "2026-08-20" },
+  { id: "idea-3", title: "Выучить итальянский", category: "someday", status: "new", createdAt: todayIso(), updatedAt: todayIso() },
 ];
