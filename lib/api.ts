@@ -87,6 +87,13 @@ export function readBool(value: unknown, field: string): boolean | undefined {
   throw new ApiError(400, `Поле «${field}» должно быть булевым`);
 }
 
+export function readQueryBool(value: string | null, field: string): boolean | undefined {
+  if (value === null || value === "") return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new ApiError(400, `Параметр «${field}» должен быть true или false`);
+}
+
 export function readInt(value: unknown, field: string, { min, max }: { min?: number; max?: number } = {}): number | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "number" || !Number.isInteger(value)) throw new ApiError(400, `Поле «${field}» должно быть целым числом`);

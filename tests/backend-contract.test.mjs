@@ -51,9 +51,28 @@ test("API validators reject impossible dates and ambiguous reminder times", asyn
   assert.throws(() => api.requireIsoDate("2026-02-29", "date"), (error) => error.status === 400);
   assert.equal(api.readOptionalTime("23:59", "time"), "23:59");
   assert.throws(() => api.readOptionalTime("25:10", "time"), (error) => error.status === 400);
+  assert.equal(api.readQueryBool("true", "completed"), true);
+  assert.equal(api.readQueryBool("false", "completed"), false);
+  assert.equal(api.readQueryBool(null, "completed"), undefined);
+  assert.throws(() => api.readQueryBool("1", "completed"), (error) => error.status === 400);
   assert.equal(api.requireIsoDateTime("2026-08-25T09:00:00+03:00", "dueAt"), "2026-08-25T06:00:00.000Z");
   assert.throws(() => api.requireIsoDateTime("2026-08-25T09:00:00", "dueAt"), (error) => error.status === 400);
   assert.equal(api.todayDate(new Date("2026-08-21T22:30:00.000Z"), "Europe/Kyiv"), "2026-08-22");
+});
+
+test("weekly summary uses Monday through Sunday across month and year boundaries", async () => {
+  const source = await readFile(new URL("app/api/v1/summary/weekly/route.ts", root), "utf8");
+  assert.doesNotMatch(source, /from\(ideas\)/);
+  const helpers = source.slice(source.indexOf("function formatIso"), source.indexOf("export const GET"));
+  const output = ts.transpileModule(`${helpers}\nexport { mondayOf, shiftDays };`, {
+    compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const weekly = await import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
+
+  assert.equal(weekly.mondayOf("2026-08-17"), "2026-08-17");
+  assert.equal(weekly.mondayOf("2026-08-23"), "2026-08-17");
+  assert.equal(weekly.mondayOf("2027-01-01"), "2026-12-28");
+  assert.equal(weekly.shiftDays("2026-12-28", 6), "2027-01-03");
 });
 
 test("sync is adopted before an enabled config can arm automatic uploads", async () => {

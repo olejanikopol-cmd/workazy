@@ -1,18 +1,21 @@
 export const dynamic = "force-dynamic";
 
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { tasks } from "@/db/schema";
-import { jsonOk, newId, nowIso, readBool, readInt, readIsoDate, readJsonBody, requireText, taskToJson, todayDate, withApi } from "@/lib/api";
+import { jsonOk, newId, nowIso, readBool, readInt, readIsoDate, readJsonBody, readQueryBool, requireText, taskToJson, todayDate, withApi } from "@/lib/api";
 
 export const GET = withApi(async (request) => {
   const url = new URL(request.url);
   const date = readIsoDate(url.searchParams.get("date"), "date", { required: false }) ?? todayDate();
+  const completed = readQueryBool(url.searchParams.get("completed"), "completed");
+  const conditions = [eq(tasks.date, date)];
+  if (completed !== undefined) conditions.push(eq(tasks.completed, completed));
   const db = await getDb();
   const rows = await db
     .select()
     .from(tasks)
-    .where(eq(tasks.date, date))
+    .where(and(...conditions))
     .orderBy(asc(tasks.position), asc(tasks.createdAt));
   return jsonOk(rows.map(taskToJson));
 });

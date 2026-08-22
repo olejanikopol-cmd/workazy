@@ -3,7 +3,7 @@
   "info": {
     "title": "Workazy Planner API",
     "version": "1.0.0",
-    "description": "Личный планер Workazy: задачи на день, цели, дневник, события календаря, идеи и напоминания. Даты — строки YYYY-MM-DD, время — HH:MM, дата-время — ISO-строка с часовым поясом. Ответы имеют вид { ok: true, data: ... } или { ok: false, error: \"текст ошибки\" }."
+    "description": "Личный планер Workazy: задачи на день, цели, дневник, события календаря, идеи и напоминания. Даты — строки YYYY-MM-DD, время — HH:MM, дата-время — ISO-строка с часовым поясом. Часовой пояс данных планера — Europe/Kyiv. Относительные даты («завтра», «в пятницу», «через неделю») ассистент должен сам преобразовать в конкретную дату до вызова. Ответы имеют вид { ok: true, data: ... } или { ok: false, error: \"текст ошибки\" }."
   },
   "servers": [{ "url": "https://personal-planner.uchepir.chatgpt.site" }],
   "security": [{ "BearerAuth": [] }],
@@ -12,14 +12,15 @@
       "get": {
         "operationId": "listTasks",
         "summary": "Список задач на дату",
-        "description": "Возвращает задачи на дату. Без параметра date — задачи на сегодня. Каждая задача: id, title, date, completed, position.",
+        "description": "Возвращает задачи на дату. Без параметра date — задачи на сегодня. Параметр completed фильтрует: false — только невыполненные, true — только выполненные. Каждая задача: id, title, date, completed, position.",
         "parameters": [
-          { "name": "date", "in": "query", "schema": { "type": "string" }, "description": "Дата YYYY-MM-DD" }
+          { "name": "date", "in": "query", "schema": { "type": "string" }, "description": "Дата YYYY-MM-DD" },
+          { "name": "completed", "in": "query", "schema": { "type": "boolean" }, "description": "true — только выполненные, false — только невыполненные" }
         ],
         "responses": { "200": { "description": "Список задач", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       },
       "post": {
-        "operationId": "createTask",
+        "operationId": "addTask",
         "summary": "Создать задачу в планере",
         "requestBody": {
           "required": true,
@@ -69,6 +70,15 @@
         "summary": "Удалить задачу",
         "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
         "responses": { "200": { "description": "Задача удалена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/tasks/{id}/complete": {
+      "post": {
+        "operationId": "completeTask",
+        "summary": "Отметить задачу выполненной",
+        "description": "Использовать, когда пользователь говорит «задача выполнена», «отметь выполненной», «готово». Тело запроса не требуется. Если известен только текст задачи, сначала найти её через listTasks и взять id.",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "responses": { "200": { "description": "Задача выполнена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       }
     },
     "/api/v1/goals": {
@@ -148,7 +158,7 @@
         "responses": { "200": { "description": "Записи дневника", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       },
       "post": {
-        "operationId": "createJournalEntry",
+        "operationId": "addJournalEntry",
         "summary": "Создать запись в дневнике",
         "requestBody": {
           "required": true,
@@ -213,7 +223,7 @@
         "responses": { "200": { "description": "События", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       },
       "post": {
-        "operationId": "createEvent",
+        "operationId": "addCalendarEvent",
         "summary": "Создать событие календаря",
         "requestBody": {
           "required": true,
@@ -279,7 +289,7 @@
         "responses": { "200": { "description": "Идеи", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       },
       "post": {
-        "operationId": "createIdea",
+        "operationId": "addIdea",
         "summary": "Добавить идею",
         "requestBody": {
           "required": true,
@@ -356,13 +366,24 @@
     },
     "/api/v1/summary/daily": {
       "get": {
-        "operationId": "getDailySummary",
+        "operationId": "getTodaySummary",
         "summary": "Сводка на день: задачи, события, дневник, активные идеи",
         "description": "Лучший способ понять, что происходит в планере. Возвращает задачи и события на дату, записи дневника, активные идеи и готовый текст сводки в поле summaryText.",
         "parameters": [
           { "name": "date", "in": "query", "schema": { "type": "string" }, "description": "Дата YYYY-MM-DD, по умолчанию сегодня" }
         ],
         "responses": { "200": { "description": "Сводка на день", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/summary/weekly": {
+      "get": {
+        "operationId": "getWeekSummary",
+        "summary": "Сводка за неделю: задачи, события, дневник по дням",
+        "description": "Возвращает данные за неделю (понедельник–воскресенье), в которую попадает параметр date (по умолчанию текущая неделя). В ответе: массивы задач, событий и записей дневника, разбивка по дням в поле byDay, счётчики в stats и готовый текст в summaryText.",
+        "parameters": [
+          { "name": "date", "in": "query", "schema": { "type": "string" }, "description": "Любой день недели, для которой нужна сводка (формат YYYY-MM-DD)" }
+        ],
+        "responses": { "200": { "description": "Сводка за неделю", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       }
     },
     "/api/v1/reminders": {
