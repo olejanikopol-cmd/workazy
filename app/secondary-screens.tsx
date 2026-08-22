@@ -135,6 +135,11 @@ export function CalendarScreen({ tasks, events, setEvents, selectedDate, setSele
     setTitle(""); setNote(""); setAddOpen(false);
   }
 
+  function removeEvent(event: CalendarEvent) {
+    if (!window.confirm(`Удалить событие «${event.title}»?`)) return;
+    setEvents((current) => current.filter((item) => item.id !== event.id));
+  }
+
   return <section className="screen secondary-screen calendar-screen" aria-labelledby="calendar-title">
     <div className="eyebrow"><span className="status-dot" /> Время и события</div>
     <div className="secondary-title"><div><h1 id="calendar-title">Календарь</h1><p>Всё важное — в контексте дня.</p></div><button className="round-add" onClick={() => setAddOpen(true)} aria-label="Добавить событие"><Icon name="plus" /></button></div>
@@ -152,7 +157,7 @@ export function CalendarScreen({ tasks, events, setEvents, selectedDate, setSele
 
     <div className="selected-day-head"><div><span>Выбранный день</span><h2>{displayDate(selectedDate)}</h2></div><button onClick={() => setAddOpen(true)}>+ Событие</button></div>
     <div className="day-agenda">
-      {selectedEvents.map((event) => <article className="agenda-item event" key={event.id}><div className="agenda-time">{event.time || "—"}</div><div><h3>{event.title}</h3><p>{event.reminder || "Без напоминания"}</p></div><span className="agenda-dot" /></article>)}
+      {selectedEvents.map((event) => <button type="button" className="agenda-item event agenda-event-delete" key={event.id} onClick={() => removeEvent(event)} aria-label={`Удалить событие «${event.title}»`}><div className="agenda-time">{event.time || "—"}</div><div><h3>{event.title}</h3><p>{event.reminder || "Без напоминания"}</p></div><span className="agenda-delete" aria-hidden="true"><Icon name="close" size={15} /></span></button>)}
       {selectedTasks.map((task) => <article className={`agenda-item task ${task.completed ? "done" : ""}`} key={task.id}><div className="agenda-time"><Icon name="check" size={16} /></div><div><h3>{task.title}</h3><p>Пункт плана</p></div><span className="agenda-dot" /></article>)}
       {!selectedEvents.length && !selectedTasks.length && <div className="empty-card mini-empty"><Icon name="calendar" size={24} /><h3>Ничего не запланировано</h3><p>Можно оставить этот день свободным.</p></div>}
     </div>
