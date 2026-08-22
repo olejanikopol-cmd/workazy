@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Личный планер</title>
+  <desc id="desc">Темная иконка планера с отметкой прогресса</desc>
+  <rect width="64" height="64" rx="16" fill="#050607"/>
+  <path d="M20 18h24a4 4 0 0 1 4 4v24a4 4 0 0 1-4 4H20a4 4 0 0 1-4-4V22a4 4 0 0 1 4-4Z" fill="#111316" stroke="#2f343a"/>
+  <path d="M25 32l5 5 11-13" fill="none" stroke="#8df7c6" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
