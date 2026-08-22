@@ -245,6 +245,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .selected-day-head button { border: 0; background: transparent; color: #aaa1f4; font-size: 11px; cursor: pointer; }
 .day-agenda { display: grid; gap: 9px; }
 .agenda-item { min-height: 67px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 18px; background: rgba(18,20,27,.8); display: grid; grid-template-columns: 50px 1fr 10px; align-items: center; gap: 10px; }
+.agenda-event-delete { width: 100%; grid-template-columns: 50px 1fr 22px; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: border-color .18s ease, background .18s ease, transform .18s ease; }
+.agenda-event-delete:hover { border-color: rgba(255,105,125,.42); background: rgba(30,22,30,.9); }
+.agenda-event-delete:active { transform: scale(.99); }
+.agenda-event-delete:focus-visible { outline: 2px solid #8d7cff; outline-offset: 2px; }
+.agenda-delete { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: #ff7f91; background: rgba(255,105,125,.1); }
 .agenda-time { color: #b2aaf4; font-size: 11px; font-variant-numeric: tabular-nums; }
 .agenda-item h3 { margin: 0; font-size: 13px; }
 .agenda-item p { margin: 5px 0 0; color: var(--muted); font-size: 10px; }
