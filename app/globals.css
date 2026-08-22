@@ -163,8 +163,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .goal-card.completed { opacity: .58; }
 .goal-card-head { display: flex; justify-content: space-between; align-items: center; }
 .goal-card-head > span { color: var(--muted); text-transform: uppercase; letter-spacing: .1em; font-size: 9px; }
+.goal-card-actions { display: flex; align-items: center; gap: 7px; }
 .goal-card-head button { width: 31px; height: 31px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: #60636e; display: grid; place-items: center; cursor: pointer; }
-.goal-card.completed .goal-card-head button { color: var(--success); border-color: rgba(115,214,170,.35); background: rgba(115,214,170,.08); }
+.goal-card-head .goal-delete { color: #ff7f91; border-color: rgba(255,105,125,.2); background: rgba(255,105,125,.06); }
+.goal-card-head .goal-delete:hover { border-color: rgba(255,105,125,.48); background: rgba(255,105,125,.12); }
+.goal-card.completed .goal-complete { color: var(--success); border-color: rgba(115,214,170,.35); background: rgba(115,214,170,.08); }
 .goal-card h2 { margin: 22px 0 6px; font-size: 20px; line-height: 1.25; letter-spacing: -.025em; }
 .goal-card > p { margin: 0; color: var(--muted); font-size: 12px; }
 .goal-progress-copy { display: flex; align-items: baseline; justify-content: space-between; margin-top: 24px; }
@@ -217,6 +220,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .entry-list { display: grid; gap: 11px; margin-top: 13px; }
 .entry-card { padding: 19px; border: 1px solid var(--line); border-radius: 20px; background: rgba(18,20,27,.8); }
 .entry-meta { display: flex; align-items: center; justify-content: space-between; color: #9e95e9; text-transform: uppercase; letter-spacing: .09em; font-size: 9px; }
+.entry-meta-actions { display: flex; align-items: center; gap: 8px; }
+.entry-delete { width: 31px; height: 31px; border-radius: 10px; border: 1px solid rgba(255,105,125,.2); background: rgba(255,105,125,.06); color: #ff7f91; display: grid; place-items: center; cursor: pointer; }
+.entry-delete:hover { border-color: rgba(255,105,125,.48); background: rgba(255,105,125,.12); }
 .mood-badge { color: var(--muted); text-transform: none; letter-spacing: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 99px; }
 .entry-card h2 { margin: 15px 0 8px; font-size: 18px; letter-spacing: -.02em; }
 .entry-card > p { margin: 0; color: #a8aab3; font-size: 13px; line-height: 1.65; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
