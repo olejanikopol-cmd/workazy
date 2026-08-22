@@ -1,6 +1,13 @@
 import type { CalendarEvent, Goal, Idea, JournalEntry, PlanTask } from "./types";
 
-export const todayIso = () => new Date().toISOString().slice(0, 10);
+export const localDateIso = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+export const todayIso = () => localDateIso(new Date());
 
 export const initialTasks: PlanTask[] = [
   { id: "task-1", title: "Закрыть главный экран проекта", completed: true, date: todayIso() },

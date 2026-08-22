@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { CSSProperties, Dispatch, FormEvent, SetStateAction } from "react";
 import type { CalendarEvent, Goal, GoalPeriod, Idea, IdeaCategory, IdeaStatus, JournalEntry, PlanTask } from "@/lib/types";
+import type { PlannerApiConfig } from "@/lib/planner-api";
 import { todayIso } from "@/lib/planner-data";
 import { Icon, displayDate, uid } from "./planner-app";
 
@@ -251,17 +252,53 @@ export function IdeasScreen({ ideas, setIdeas }: { ideas: Idea[]; setIdeas: Disp
   </section>;
 }
 
-export function SettingsSheet({ onClose }: { onClose: () => void }) {
+export function SettingsSheet({ apiConfig, onSaveApiConfig, onClose }: {
+  apiConfig: PlannerApiConfig;
+  onSaveApiConfig: (config: PlannerApiConfig) => Promise<void>;
+  onClose: () => void;
+}) {
   const [pushEnabled, setPushEnabled] = useState(false);
   const [telegramRequested, setTelegramRequested] = useState(false);
+  const [baseUrl, setBaseUrl] = useState(apiConfig.baseUrl);
+  const [token, setToken] = useState(apiConfig.token);
+  const [syncEnabled, setSyncEnabled] = useState(apiConfig.enabled);
+  const [syncStatus, setSyncStatus] = useState("");
+  const [syncSaving, setSyncSaving] = useState(false);
+
+  async function saveServerConfig() {
+    setSyncSaving(true);
+    setSyncStatus(syncEnabled ? "Проверка..." : "Сохранение...");
+    try {
+      await onSaveApiConfig({ baseUrl: baseUrl.trim(), token: token.trim(), enabled: syncEnabled });
+      setSyncStatus(syncEnabled ? "Подключено" : "Сохранено");
+    } catch (error) {
+      setSyncStatus(error instanceof Error ? error.message : "Не удалось подключиться");
+    } finally {
+      setSyncSaving(false);
+    }
+  }
+
   return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><section className="compact-sheet settings-sheet">
     <div className="modal-handle" /><div className="editor-head"><div><span>Подключения</span><h2>Напоминания</h2></div><button className="icon-button" onClick={onClose} aria-label="Закрыть"><Icon name="close" /></button></div>
-    <p className="sheet-description">Каналы уже предусмотрены в интерфейсе. Реальные подключения появятся вместе с backend.</p>
+    <p className="sheet-description">Каналы уже предусмотрены в интерфейсе. Реальные подключения работают через Workazy API.</p>
     <div className="settings-list">
       <article><div className="setting-icon telegram"><Icon name="telegram" /></div><div><h3>Telegram</h3><p>{telegramRequested ? "Готово к подключению" : "Не подключено"}</p></div><button onClick={() => setTelegramRequested(true)}>{telegramRequested ? "Ожидает" : "Подключить"}</button></article>
       <article><div className="setting-icon"><Icon name="bell" /></div><div><h3>Browser Push</h3><p>{pushEnabled ? "Включены" : "Выключены"}</p></div><label className="toggle"><input type="checkbox" checked={pushEnabled} onChange={(e) => setPushEnabled(e.target.checked)} /><span /></label></article>
       <article className="muted-setting"><div className="setting-icon">SMS</div><div><h3>SMS</h3><p>Будет доступно позже</p></div><span className="soon">Скоро</span></article>
     </div>
-    <div className="integration-note"><Icon name="spark" size={18} /><p>Позже ChatGPT сможет читать и изменять планы через MCP — без отдельного AI внутри приложения.</p></div>
+    <div className="editor-head sync-head"><div><span>Сервер</span><h2>Синхронизация</h2></div></div>
+    <div className="sync-fields">
+      <label className="field"><span>Адрес сервера</span><input value={baseUrl} onChange={(e) => { setBaseUrl(e.target.value); setSyncStatus(""); }} placeholder="https://workazy.example.com" autoComplete="off" /></label>
+      <label className="field"><span>API-токен</span><input value={token} onChange={(e) => { setToken(e.target.value); setSyncStatus(""); }} placeholder="Bearer-токен Workazy" type="password" autoComplete="off" /></label>
+      <div className="sync-row">
+        <div><h3>Включить синхронизацию</h3><p>Данные сохраняются локально и копируются на сервер</p></div>
+        <label className="toggle"><input type="checkbox" checked={syncEnabled} onChange={(e) => { setSyncEnabled(e.target.checked); setSyncStatus(""); }} /><span /></label>
+      </div>
+      <div className="sync-actions">
+        <button onClick={saveServerConfig} disabled={syncSaving}>{syncSaving ? "Проверка" : "Сохранить"}</button>
+        {syncStatus && <span>{syncStatus}</span>}
+      </div>
+    </div>
+    <div className="integration-note"><Icon name="spark" size={18} /><p>ChatGPT может читать и изменять планы через Custom GPT Actions и Telegram-бота — без отдельного AI внутри приложения.</p></div>
   </section></div>;
 }

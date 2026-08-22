@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AppTab, CalendarEvent, Goal, Idea, JournalEntry, PlanTask } from "@/lib/types";
-import { initialEntries, initialEvents, initialGoals, initialIdeas, initialTasks, todayIso } from "@/lib/planner-data";
+import { initialEntries, initialEvents, initialGoals, initialIdeas, initialTasks, localDateIso, todayIso } from "@/lib/planner-data";
 import { loadPlannerState, savePlannerState } from "@/lib/planner-storage";
+import { adoptServerState, defaultApiConfig, loadApiConfig, persistPlannerState, saveApiConfig, type PlannerApiConfig } from "@/lib/planner-api";
 import { CalendarScreen, GoalsScreen, IdeasScreen, JournalScreen, ProgressScreen, SettingsSheet } from "./secondary-screens";
 
 const tabs: { id: AppTab; label: string; icon: string }[] = [
@@ -45,7 +46,7 @@ export function displayDate(iso: string) {
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
   if (iso === today) return "Сегодня";
-  if (iso === tomorrow.toISOString().slice(0, 10)) return "Завтра";
+  if (iso === localDateIso(tomorrow)) return "Завтра";
   return new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(new Date(`${iso}T12:00:00`));
 }
 
@@ -63,6 +64,8 @@ export default function PlannerApp() {
   const [editorText, setEditorText] = useState("1. ");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [menuPlacement, setMenuPlacement] = useState<"up" | "down">("down");
+  const [apiConfig, setApiConfig] = useState<PlannerApiConfig>(defaultApiConfig);
+  const syncArmed = useRef(false);
 
   const dayTasks = useMemo(() => tasks.filter((task) => task.date === selectedDate), [tasks, selectedDate]);
   const completed = dayTasks.filter((task) => task.completed).length;
@@ -78,11 +81,70 @@ export default function PlannerApp() {
       if (Array.isArray(saved.ideas)) setIdeas(saved.ideas as Idea[]);
     }
     setHydrated(true);
+
+    const config = loadApiConfig();
+    if (config.enabled && config.token && config.baseUrl) {
+      adoptServerState(config)
+        .then((serverState) => {
+          if (serverState) {
+            setTasks(serverState.tasks);
+            setGoals(serverState.goals);
+            setEntries(serverState.entries);
+            setEvents(serverState.events);
+            setIdeas(serverState.ideas);
+          }
+          setApiConfig(config);
+        })
+        .catch((error) => {
+          console.error("Не удалось включить синхронизацию", error);
+          setApiConfig({ ...config, enabled: false });
+        });
+    } else {
+      setApiConfig(config);
+    }
   }, []);
 
   useEffect(() => {
     if (hydrated) savePlannerState({ tasks, goals, entries, events, ideas });
   }, [tasks, goals, entries, events, ideas, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!syncArmed.current) {
+      syncArmed.current = true;
+      return;
+    }
+    if (!apiConfig.enabled || !apiConfig.token || !apiConfig.baseUrl) return;
+    const timer = window.setTimeout(() => {
+      void persistPlannerState({ tasks, goals, entries, events, ideas }, apiConfig).catch((error) => {
+        console.error("Не удалось синхронизировать данные", error);
+      });
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [tasks, goals, entries, events, ideas, hydrated, apiConfig]);
+
+  async function updateApiConfig(next: PlannerApiConfig) {
+    if (next.enabled) {
+      if (!next.baseUrl || !next.token) throw new Error("Укажите адрес сервера и API-токен");
+      const previous = apiConfig;
+      setApiConfig({ ...previous, enabled: false });
+      try {
+        const serverState = await adoptServerState(next);
+        if (serverState) {
+          setTasks(serverState.tasks);
+          setGoals(serverState.goals);
+          setEntries(serverState.entries);
+          setEvents(serverState.events);
+          setIdeas(serverState.ideas);
+        }
+      } catch (error) {
+        setApiConfig(previous);
+        throw error;
+      }
+    }
+    setApiConfig(next);
+    saveApiConfig(next);
+  }
 
   useEffect(() => {
     if (!openMenuId) return;
@@ -206,7 +268,7 @@ export default function PlannerApp() {
 
           <div className="date-switcher" aria-label="Выбор даты плана">
             <button className={selectedDate === todayIso() ? "active" : ""} onClick={() => setSelectedDate(todayIso())}>Сегодня</button>
-            <button className={selectedDate !== todayIso() ? "active" : ""} onClick={() => { const d = new Date(); d.setDate(d.getDate() + 1); setSelectedDate(d.toISOString().slice(0, 10)); }}>Завтра</button>
+            <button className={selectedDate !== todayIso() ? "active" : ""} onClick={() => { const d = new Date(); d.setDate(d.getDate() + 1); setSelectedDate(localDateIso(d)); }}>Завтра</button>
             <label className="date-picker" title="Выбрать дату"><Icon name="calendar" size={18} /><input aria-label="Выбрать другую дату" type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} /></label>
           </div>
 
@@ -261,7 +323,7 @@ export default function PlannerApp() {
           <div className="editor-footer"><span>{editorText.split("\n").filter((line) => line.replace(/^\s*\d+[.)]\s*/, "").trim()).length} пунктов</span><button onClick={savePlan}>Сохранить план</button></div>
         </section>
       </div>}
-      {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsSheet apiConfig={apiConfig} onSaveApiConfig={updateApiConfig} onClose={() => setSettingsOpen(false)} />}
     </main>
   );
 }

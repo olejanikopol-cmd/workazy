@@ -1,0 +1,441 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Workazy Planner API",
+    "version": "1.0.0",
+    "description": "Личный планер Workazy: задачи на день, цели, дневник, события календаря, идеи и напоминания. Даты — строки YYYY-MM-DD, время — HH:MM, дата-время — ISO-строка с часовым поясом. Ответы имеют вид { ok: true, data: ... } или { ok: false, error: \"текст ошибки\" }."
+  },
+  "servers": [{ "url": "https://personal-planner.uchepir.chatgpt.site" }],
+  "security": [{ "BearerAuth": [] }],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "operationId": "listTasks",
+        "summary": "Список задач на дату",
+        "description": "Возвращает задачи на дату. Без параметра date — задачи на сегодня. Каждая задача: id, title, date, completed, position.",
+        "parameters": [
+          { "name": "date", "in": "query", "schema": { "type": "string" }, "description": "Дата YYYY-MM-DD" }
+        ],
+        "responses": { "200": { "description": "Список задач", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
+      "post": {
+        "operationId": "createTask",
+        "summary": "Создать задачу в планере",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                  "title": { "type": "string", "description": "Текст задачи" },
+                  "date": { "type": "string", "description": "Дата YYYY-MM-DD, по умолчанию сегодня" },
+                  "completed": { "type": "boolean" },
+                  "position": { "type": "integer", "description": "Порядок в списке" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Задача создана", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "patch": {
+        "operationId": "updateTask",
+        "summary": "Обновить задачу: текст, дату или отметку выполнения",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string" },
+                  "date": { "type": "string" },
+                  "completed": { "type": "boolean" },
+                  "position": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Задача обновлена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
+      "delete": {
+        "operationId": "deleteTask",
+        "summary": "Удалить задачу",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "responses": { "200": { "description": "Задача удалена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/goals": {
+      "get": {
+        "operationId": "listGoals",
+        "summary": "Список целей",
+        "description": "Цель: id, title, description, period (week|month|year), progress 0-100, deadline, completed.",
+        "parameters": [
+          { "name": "period", "in": "query", "schema": { "type": "string", "enum": ["week", "month", "year"] } }
+        ],
+        "responses": { "200": { "description": "Список целей", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
+      "post": {
+        "operationId": "createGoal",
+        "summary": "Создать цель",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["title", "period", "deadline"],
+                "properties": {
+                  "title": { "type": "string" },
+                  "description": { "type": "string" },
+                  "period": { "type": "string", "enum": ["week", "month", "year"] },
+                  "progress": { "type": "integer", "minimum": 0, "maximum": 100 },
+                  "deadline": { "type": "string", "description": "Дедлайн цели YYYY-MM-DD" },
+                  "completed": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Цель создана", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/goals/{id}": {
+      "patch": {
+        "operationId": "updateGoal",
+        "summary": "Обновить цель: прогресс, срок, статус",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string" },
+                  "period": { "type": "string", "enum": ["week", "month", "year"] },
+                  "progress": { "type": "integer", "minimum": 0, "maximum": 100 },
+                  "deadline": { "type": "string" },
+                  "completed": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Цель обновлена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
+      "delete": {
+        "operationId": "deleteGoal",
+        "summary": "Удалить цель",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "responses": { "200": { "description": "Цель удалена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/journal": {
+      "get": {
+        "operationId": "listJournalEntries",
+        "summary": "Записи дневника",
+        "description": "Без параметра date — последние 50 записей. С параметром date — записи за дату. Запись: id, date, title, body, mood, tags.",
+        "parameters": [
+          { "name": "date", "in": "query", "schema": { "type": "string" }, "description": "Дата YYYY-MM-DD" }
+        ],
+        "responses": { "200": { "description": "Записи дневника", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
+      "post": {
+        "operationId": "createJournalEntry",
+        "summary": "Создать запись в дневнике",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["body"],
+                "properties": {
+                  "date": { "type": "string", "description": "Дата записи, по умолчанию сегодня" },
+                  "title": { "type": "string" },
+                  "body": { "type": "string", "description": "Текст записи" },
+                  "mood": { "type": "string" },
+                  "tags": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Запись создана", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/journal/{id}": {
+      "patch": {
+        "operationId": "updateJournalEntry",
+        "summary": "Обновить запись дневника",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "date": { "type": "string", "format": "date" },
+                  "title": { "type": "string", "nullable": true },
+                  "body": { "type": "string" },
+                  "mood": { "type": "string", "nullable": true },
+                  "tags": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Запись обновлена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
+      "delete": {
+        "operationId": "deleteJournalEntry",
+        "summary": "Удалить запись дневника",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "responses": { "200": { "description": "Запись удалена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "operationId": "listEvents",
+        "summary": "События календаря",
+        "description": "Без параметра date — ближайшие 100 событий. Событие: id, title, date, time, note, reminder.",
+        "parameters": [
+          { "name": "date", "in": "query", "schema": { "type": "string" }, "description": "Дата YYYY-MM-DD" }
+        ],
+        "responses": { "200": { "description": "События", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
+      "post": {
+        "operationId": "createEvent",
+        "summary": "Создать событие календаря",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["title", "date"],
+                "properties": {
+                  "title": { "type": "string" },
+                  "date": { "type": "string", "description": "Дата события YYYY-MM-DD" },
+                  "time": { "type": "string", "description": "Время события HH:MM" },
+                  "note": { "type": "string" },
+                  "reminder": { "type": "string", "description": "Текст напоминания" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Событие создано", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/events/{id}": {
+      "patch": {
+        "operationId": "updateEvent",
+        "summary": "Обновить событие календаря",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string" },
+                  "date": { "type": "string" },
+                  "time": { "type": "string", "nullable": true },
+                  "note": { "type": "string", "nullable": true },
+                  "reminder": { "type": "string", "nullable": true }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Событие обновлено", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
+      "delete": {
+        "operationId": "deleteEvent",
+        "summary": "Удалить событие календаря",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "responses": { "200": { "description": "Событие удалено", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/ideas": {
+      "get": {
+        "operationId": "listIdeas",
+        "summary": "Список идей",
+        "description": "Идея: id, title, description, category (thought|want|project|purchase|someday), status (new|thinking|plan|done|archive).",
+        "parameters": [
+          { "name": "category", "in": "query", "schema": { "type": "string", "enum": ["thought", "want", "project", "purchase", "someday"] } },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["new", "thinking", "plan", "done", "archive"] } }
+        ],
+        "responses": { "200": { "description": "Идеи", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
+      "post": {
+        "operationId": "createIdea",
+        "summary": "Добавить идею",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["title", "category"],
+                "properties": {
+                  "title": { "type": "string" },
+                  "description": { "type": "string" },
+                  "category": { "type": "string", "enum": ["thought", "want", "project", "purchase", "someday"], "description": "thought = мысль, want = хочу, project = проект, purchase = покупка, someday = когда-нибудь" },
+                  "status": { "type": "string", "enum": ["new", "thinking", "plan", "done", "archive"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Идея создана", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/ideas/{id}": {
+      "patch": {
+        "operationId": "updateIdea",
+        "summary": "Обновить идею (статус, категорию, текст)",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string" },
+                  "description": { "type": "string", "nullable": true },
+                  "category": { "type": "string", "enum": ["thought", "want", "project", "purchase", "someday"] },
+                  "status": { "type": "string", "enum": ["new", "thinking", "plan", "done", "archive"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Идея обновлена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
+      "delete": {
+        "operationId": "deleteIdea",
+        "summary": "Удалить идею",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "responses": { "200": { "description": "Идея удалена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/settings": {
+      "get": {
+        "operationId": "getSettings",
+        "summary": "Прочитать настройки планера (ключ-значение)",
+        "responses": { "200": { "description": "Объект настроек", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
+      "patch": {
+        "operationId": "updateSettings",
+        "summary": "Обновить настройки планера",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Пары ключ-значение, например { \"theme\": \"dark\" }"
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Обновлённый объект настроек", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/summary/daily": {
+      "get": {
+        "operationId": "getDailySummary",
+        "summary": "Сводка на день: задачи, события, дневник, активные идеи",
+        "description": "Лучший способ понять, что происходит в планере. Возвращает задачи и события на дату, записи дневника, активные идеи и готовый текст сводки в поле summaryText.",
+        "parameters": [
+          { "name": "date", "in": "query", "schema": { "type": "string" }, "description": "Дата YYYY-MM-DD, по умолчанию сегодня" }
+        ],
+        "responses": { "200": { "description": "Сводка на день", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/reminders": {
+      "post": {
+        "operationId": "createReminder",
+        "summary": "Поставить напоминание для Telegram-бота",
+        "description": "Создаёт напоминание, которое Telegram-бот отправит, когда наступит срок. dueAt — ISO-дата-время с часовым поясом, например 2026-08-25T09:00:00+03:00.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["entityType", "entityId", "dueAt"],
+                "properties": {
+                  "entityType": { "type": "string", "enum": ["task", "event"] },
+                  "entityId": { "type": "string", "description": "Идентификатор задачи или события" },
+                  "dueAt": { "type": "string", "format": "date-time", "description": "Когда отправить напоминание, обязательно с часовым поясом, например 2026-08-25T09:00:00+03:00" },
+                  "channel": { "type": "string", "description": "Канал доставки, по умолчанию telegram" },
+                  "payload": { "type": "string", "description": "Текст напоминания" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Напоминание создано", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/reminders/pending": {
+      "get": {
+        "operationId": "getPendingReminders",
+        "summary": "Напоминания, которые пора отправить",
+        "description": "Возвращает напоминания со статусом pending, у которых наступил срок. После отправки бот отмечает их как отправленные.",
+        "parameters": [
+          { "name": "now", "in": "query", "schema": { "type": "string", "format": "date-time" }, "description": "Момент проверки с часовым поясом; по умолчанию текущее время сервера" }
+        ],
+        "responses": { "200": { "description": "Список напоминаний", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/reminders/{id}/sent": {
+      "post": {
+        "operationId": "markReminderSent",
+        "summary": "Отметить напоминание отправленным",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "responses": { "200": { "description": "Напоминание отмечено", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Статический API-токен планера"
+      }
+    },
+    "parameters": {
+      "IdPath": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "Идентификатор объекта"
+      }
+    },
+    "schemas": {
+      "OkResponse": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean" },
+          "data": { "description": "Данные ответа: объект или массив объектов" }
+        }
+      }
+    }
+  }
+}

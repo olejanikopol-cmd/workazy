@@ -10,7 +10,7 @@
   "dev": "next dev",
   "build": "next build",
   "start": "next start",
-  "test": "npm run build && node --test tests/rendered-html.test.mjs",
+  "test": "npm run build && node --test tests/*.test.mjs",
   "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
   "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
   },

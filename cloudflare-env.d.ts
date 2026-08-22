@@ -26,6 +26,7 @@ interface Fetcher {
 declare module "cloudflare:workers" {
   export const env: {
     DB?: D1Database;
+    WORKAZY_API_TOKEN?: string;
     [key: string]: unknown;
   };
 }
