@@ -81,11 +81,13 @@ export const settings = sqliteTable("settings", {
 
 // История напоминаний для Telegram-бота.
 // Связь с задачами/событиями полиморфная: по паре (entityType, entityId).
+// entityType "digest" + entityId "hourly" — почасовая сводка для анти-спама:
+// в payload хранится хэш состава задач/событий, уже отправленных в Telegram.
 export const reminderLogs = sqliteTable(
   "reminder_logs",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
-    entityType: text("entity_type", { enum: ["task", "event"] }).notNull(),
+    entityType: text("entity_type", { enum: ["task", "event", "digest"] }).notNull(),
     entityId: text("entity_id").notNull(),
     dueAt: text("due_at").notNull(),
     sentAt: text("sent_at"),
