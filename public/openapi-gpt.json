@@ -1,0 +1,800 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Workazy Custom GPT Actions",
+    "version": "1.0.0",
+    "description": "Действия Custom GPT для личного планера Workazy: задачи, цели, текстовый дневник, идеи, события календаря и сводки. Даты передаются в формате YYYY-MM-DD, время в формате HH:MM. Часовой пояс планера — Europe/Kyiv. Относительные даты, например «завтра» или «в пятницу», ассистент преобразует в конкретную дату до вызова API. Медиафайлы через Actions не загружаются."
+  },
+  "servers": [
+    {
+      "url": "https://personal-planner.uchepir.chatgpt.site"
+    }
+  ],
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "operationId": "listTasks",
+        "summary": "Получить задачи",
+        "description": "Возвращает задачи на указанную дату. Без date возвращает задачи на сегодня. completed=false оставляет только невыполненные задачи, completed=true — только выполненные.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DateQuery"
+          },
+          {
+            "name": "completed",
+            "in": "query",
+            "description": "Фильтр по выполнению задачи",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      },
+      "post": {
+        "operationId": "addTask",
+        "summary": "Создать задачу",
+        "description": "Добавляет новую задачу. Если дата не указана, используется сегодняшний день.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "patch": {
+        "operationId": "updateTask",
+        "summary": "Изменить задачу",
+        "description": "Изменяет текст, дату, порядок или статус выполнения задачи.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteTask",
+        "summary": "Удалить задачу",
+        "description": "Безвозвратно удаляет задачу по идентификатору.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}/complete": {
+      "post": {
+        "operationId": "completeTask",
+        "summary": "Отметить задачу выполненной",
+        "description": "Помечает задачу выполненной. Если известен только текст, сначала вызови listTasks и найди идентификатор задачи.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/goals": {
+      "get": {
+        "operationId": "listGoals",
+        "summary": "Получить цели",
+        "description": "Возвращает цели. Можно отфильтровать цели по периоду: week, month или year.",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Период цели",
+            "schema": {
+              "type": "string",
+              "enum": ["week", "month", "year"]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createGoal",
+        "summary": "Создать цель",
+        "description": "Создаёт цель с периодом, дедлайном и необязательным начальным прогрессом.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoalCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/goals/{id}": {
+      "patch": {
+        "operationId": "updateGoal",
+        "summary": "Изменить цель",
+        "description": "Изменяет название, описание, период, прогресс, дедлайн или статус цели.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoalUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteGoal",
+        "summary": "Удалить цель",
+        "description": "Безвозвратно удаляет цель по идентификатору.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/journal": {
+      "get": {
+        "operationId": "listJournalEntries",
+        "summary": "Получить записи дневника",
+        "description": "Возвращает записи дневника за указанную дату. Без date возвращает последние 50 записей. Готовые транскрипты существующих вложений могут присутствовать в ответе как часть записи.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DateQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      },
+      "post": {
+        "operationId": "addJournalEntry",
+        "summary": "Создать текстовую запись дневника",
+        "description": "Создаёт текстовую запись дневника. Загрузка аудио и видео через Custom GPT Actions не поддерживается.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JournalCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/journal/{id}": {
+      "get": {
+        "operationId": "getJournalEntry",
+        "summary": "Получить одну запись дневника",
+        "description": "Возвращает запись дневника по идентификатору, включая доступные текстовые транскрипты её вложений.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateJournalEntry",
+        "summary": "Изменить запись дневника",
+        "description": "Изменяет дату, заголовок, текст, настроение или теги записи дневника.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JournalUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/ideas": {
+      "get": {
+        "operationId": "listIdeas",
+        "summary": "Получить идеи",
+        "description": "Возвращает идеи. Можно фильтровать по категории и статусу.",
+        "parameters": [
+          {
+            "name": "category",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/IdeaCategory"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/IdeaStatus"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      },
+      "post": {
+        "operationId": "addIdea",
+        "summary": "Создать идею",
+        "description": "Добавляет новую идею с категорией и необязательным статусом.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdeaCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/ideas/{id}": {
+      "patch": {
+        "operationId": "updateIdea",
+        "summary": "Изменить идею",
+        "description": "Изменяет текст, описание, категорию или статус идеи.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdeaUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteIdea",
+        "summary": "Удалить идею",
+        "description": "Безвозвратно удаляет идею по идентификатору.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "operationId": "listEvents",
+        "summary": "Получить события календаря",
+        "description": "Возвращает события за указанную дату. Без date возвращает ближайшие события.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DateQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      },
+      "post": {
+        "operationId": "addCalendarEvent",
+        "summary": "Создать событие календаря",
+        "description": "Добавляет событие календаря на конкретную дату и необязательное время.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/events/{id}": {
+      "patch": {
+        "operationId": "updateEvent",
+        "summary": "Изменить событие календаря",
+        "description": "Изменяет название, дату, время, заметку или текст напоминания события.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteEvent",
+        "summary": "Удалить событие календаря",
+        "description": "Безвозвратно удаляет событие по идентификатору.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/summary/daily": {
+      "get": {
+        "operationId": "getTodaySummary",
+        "summary": "Получить сводку за день",
+        "description": "Возвращает задачи, события, записи дневника, активные идеи и готовый текст сводки за дату. Без date используется сегодняшний день.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DateQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/summary/weekly": {
+      "get": {
+        "operationId": "getWeekSummary",
+        "summary": "Получить сводку за неделю",
+        "description": "Возвращает сводку за неделю с понедельника по воскресенье, в которую входит date. Без date используется текущая неделя.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DateQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Секретный API-токен Workazy"
+      }
+    },
+    "parameters": {
+      "IdPath": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Идентификатор объекта. Если идентификатор неизвестен, сначала вызови соответствующую list-операцию.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "DateQuery": {
+        "name": "date",
+        "in": "query",
+        "required": false,
+        "description": "Дата в формате YYYY-MM-DD",
+        "schema": {
+          "type": "string",
+          "format": "date"
+        }
+      }
+    },
+    "responses": {
+      "Ok": {
+        "description": "Успешный ответ Workazy",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/OkResponse"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "OkResponse": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [true]
+          },
+          "data": {
+            "description": "Объект, массив или сводка, возвращённые операцией"
+          }
+        }
+      },
+      "TaskCreate": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Текст задачи"
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "completed": {
+            "type": "boolean",
+            "default": false
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "TaskUpdate": {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "GoalCreate": {
+        "type": "object",
+        "required": ["title", "period", "deadline"],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "period": {
+            "type": "string",
+            "enum": ["week", "month", "year"]
+          },
+          "progress": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "default": 0
+          },
+          "deadline": {
+            "type": "string",
+            "format": "date"
+          },
+          "completed": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "GoalUpdate": {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "period": {
+            "type": "string",
+            "enum": ["week", "month", "year"]
+          },
+          "progress": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "deadline": {
+            "type": "string",
+            "format": "date"
+          },
+          "completed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "JournalCreate": {
+        "type": "object",
+        "required": ["body"],
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string",
+            "description": "Текст записи дневника"
+          },
+          "mood": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "JournalUpdate": {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "body": {
+            "type": "string"
+          },
+          "mood": {
+            "type": "string",
+            "nullable": true
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "IdeaCategory": {
+        "type": "string",
+        "description": "thought — мысль, want — желание, project — проект, purchase — покупка, someday — когда-нибудь",
+        "enum": ["thought", "want", "project", "purchase", "someday"]
+      },
+      "IdeaStatus": {
+        "type": "string",
+        "description": "Состояние идеи",
+        "enum": ["new", "thinking", "plan", "done", "archive"]
+      },
+      "IdeaCreate": {
+        "type": "object",
+        "required": ["title", "category"],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "category": {
+            "$ref": "#/components/schemas/IdeaCategory"
+          },
+          "status": {
+            "$ref": "#/components/schemas/IdeaStatus"
+          }
+        }
+      },
+      "IdeaUpdate": {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "category": {
+            "$ref": "#/components/schemas/IdeaCategory"
+          },
+          "status": {
+            "$ref": "#/components/schemas/IdeaStatus"
+          }
+        }
+      },
+      "EventCreate": {
+        "type": "object",
+        "required": ["title", "date"],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "time": {
+            "type": "string",
+            "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+            "description": "Время HH:MM"
+          },
+          "note": {
+            "type": "string"
+          },
+          "reminder": {
+            "type": "string",
+            "description": "Текстовая пометка о напоминании"
+          }
+        }
+      },
+      "EventUpdate": {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "time": {
+            "type": "string",
+            "nullable": true,
+            "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$"
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "reminder": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      }
+    }
+  }
+}

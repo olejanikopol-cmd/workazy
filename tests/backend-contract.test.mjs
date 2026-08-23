@@ -5,6 +5,7 @@ import ts from "typescript";
 
 const root = new URL("../", import.meta.url);
 const spec = JSON.parse(await readFile(new URL("public/openapi.json", root), "utf8"));
+const gptSpec = JSON.parse(await readFile(new URL("public/openapi-gpt.json", root), "utf8"));
 
 function routeUrl(path) {
   const routePath = path.replace(/^\//, "").replace(/\{([^}]+)\}/g, "[$1]");
@@ -22,6 +23,27 @@ test("every OpenAPI operation has a matching Next route export", async () => {
       operationIds.add(operation.operationId);
     }
   }
+});
+
+test("Custom GPT OpenAPI stays focused and below the 30-operation limit", async () => {
+  const operations = [];
+  for (const [path, pathItem] of Object.entries(gptSpec.paths)) {
+    const source = await readFile(routeUrl(path), "utf8");
+    for (const [method, operation] of Object.entries(pathItem)) {
+      assert.match(source, new RegExp(`export const ${method.toUpperCase()}\\s*=`), `${method.toUpperCase()} ${path}`);
+      operations.push({ path, operationId: operation.operationId });
+    }
+  }
+
+  assert.ok(operations.length <= 30, `Custom GPT schema has ${operations.length} operations`);
+  assert.equal(new Set(operations.map((operation) => operation.operationId)).size, operations.length);
+  assert.equal(gptSpec.servers[0].url, "https://personal-planner.uchepir.chatgpt.site");
+  assert.deepEqual(gptSpec.security, [{ BearerAuth: [] }]);
+  assert.equal(gptSpec.components.securitySchemes.BearerAuth.scheme, "bearer");
+  assert.doesNotMatch(
+    operations.map((operation) => `${operation.path} ${operation.operationId}`).join("\n"),
+    /media|upload|file-url|reminder|health|storage/i,
+  );
 });
 
 test("state replacement uses an atomic D1 batch and derives task order from the array", async () => {
