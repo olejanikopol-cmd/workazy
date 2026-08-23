@@ -16,7 +16,11 @@ test("telegram digest route deduplicates by stored hash and logs every outcome",
   assert.match(source, /currentHourBucket\(/, "каждый час получает отдельный lock bucket");
   assert.match(source, /onConflictDoNothing/, "повторный запуск в том же часе не дублирует отправку");
   assert.match(source, /currentDigestHour\(/, "в сообщение попадает ровный часовой слот");
-  assert.match(source, /buildMessage\(dayTasks, dayEvents, digestHour\)/, "Telegram-текст использует округлённое время");
+  assert.match(source, /buildMessage\(dayTasks, dayEvents, nextTasks, nextEvents, digestHour\)/, "Telegram-текст использует округлённое время");
+  assert.match(source, /✅/, "выполненные пункты плана помечаются зелёной галочкой");
+  assert.match(source, /❌/, "невыполненные пункты плана помечаются красным крестиком");
+  assert.match(source, /nextDayDate/, "дайджест включает задачи и события на завтра");
+  assert.match(source, /План на завтра/, "завтрашний план попадает в сообщение");
 });
 
 test("digest hash changes when visible Telegram content changes", async () => {
@@ -28,11 +32,13 @@ test("digest hash changes when visible Telegram content changes", async () => {
   const digest = await import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
   const tasks = [{ id: "task-1", title: "Первая задача", completed: false }];
   const events = [{ id: "event-1", title: "Созвон", time: "12:00" }];
-  const initial = digest.digestHash(tasks, events);
+  const nextTasks = [{ id: "task-2", title: "Завтрашняя задача", completed: false }];
+  const initial = digest.digestHash(tasks, events, nextTasks, []);
 
-  assert.notEqual(initial, digest.digestHash([{ ...tasks[0], title: "Новый текст" }], events));
-  assert.notEqual(initial, digest.digestHash([{ ...tasks[0], completed: true }], events));
-  assert.notEqual(initial, digest.digestHash(tasks, [{ ...events[0], time: "13:00" }]));
+  assert.notEqual(initial, digest.digestHash([{ ...tasks[0], title: "Новый текст" }], events, nextTasks, []));
+  assert.notEqual(initial, digest.digestHash([{ ...tasks[0], completed: true }], events, nextTasks, []));
+  assert.notEqual(initial, digest.digestHash(tasks, [{ ...events[0], time: "13:00" }], nextTasks, []));
+  assert.notEqual(initial, digest.digestHash(tasks, events, [], []));
 });
 
 test("telegram client uses the Bot API directly and reads secrets from env", async () => {

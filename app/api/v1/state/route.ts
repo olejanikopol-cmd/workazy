@@ -10,6 +10,7 @@ import type { BatchItem } from "drizzle-orm/batch";
 import { getDb } from "@/db";
 import { calendarEvents, goals, ideas, journalEntries, tasks } from "@/db/schema";
 import { entryToJson, eventToJson, goalToJson, ideaToJson, jsonOk, readBool, readInt, readJsonBody, readOneOf, readOptionalText, readOptionalTime, readTags, readText, requireIsoDate, requireOneOf, requireText, taskToJson, ApiError, nowIso, withApi } from "@/lib/api";
+import { attachEntryMedia, listAllMedia, pruneOrphanedMedia } from "@/lib/journal-media";
 
 const CATEGORIES = ["thought", "want", "project", "purchase", "someday"] as const;
 const STATUSES = ["new", "thinking", "plan", "done", "archive"] as const;
@@ -24,10 +25,11 @@ export const GET = withApi(async () => {
     db.select().from(calendarEvents).orderBy(asc(calendarEvents.date), asc(calendarEvents.time)),
     db.select().from(ideas).orderBy(asc(ideas.createdAt)),
   ]);
+  const mediaByEntry = await listAllMedia(db);
   return jsonOk({
     tasks: taskRows.map(taskToJson),
     goals: goalRows.map(goalToJson),
-    entries: entryRows.map(entryToJson),
+    entries: attachEntryMedia(entryRows.map(entryToJson), mediaByEntry),
     events: eventRows.map(eventToJson),
     ideas: ideaRows.map(ideaToJson),
   });
@@ -87,7 +89,8 @@ function parseEntryItem(value: unknown, index: number): typeof journalEntries.$i
     id: requireText(item.id, `${label}.id`, { maxLength: 80 }),
     date: requireIsoDate(item.date, `${label}.date`),
     title: readOptionalText(item.title, `${label}.title`, { maxLength: 300 }) ?? null,
-    body: requireText(item.body, `${label}.body`, { maxLength: 5000 }),
+    // Текст может быть пустым у записей из аудио/видео.
+    body: readOptionalText(item.body, `${label}.body`, { maxLength: 5000 }) ?? null,
     mood: readOptionalText(item.mood, `${label}.mood`, { maxLength: 60 }) ?? null,
     tags: JSON.stringify(readTags(item.tags, `${label}.tags`)),
     ...readTimestamps(item, label),
@@ -166,6 +169,10 @@ export const PUT = withApi(async (request) => {
   for (const rows of chunks(ideaRows, 14)) statements.push(db.insert(ideas).values(rows));
 
   await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+
+  // Медиа выживших записей остаётся нетронутым; файлы и метаданные
+  // удалённых записей вычищаются из D1 и R2 после успешной замены.
+  await pruneOrphanedMedia(entryRows.map((row) => row.id));
 
   return jsonOk({
     tasks: taskRows.length,

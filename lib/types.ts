@@ -20,6 +20,30 @@ export type Goal = {
   completed: boolean;
 };
 
+export type JournalMediaKind = "audio" | "video";
+
+export type TranscriptionStatus = "pending" | "processing" | "ready" | "error";
+
+// Только метаданные: бинарное содержимое никогда не попадает в состояние планера.
+export type JournalMedia = {
+  id: string;
+  journalEntryId: string;
+  type: JournalMediaKind;
+  mimeType: string;
+  originalFilename?: string;
+  sizeBytes: number;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  transcript?: string;
+  transcriptEdited: boolean;
+  transcriptionStatus: TranscriptionStatus;
+  transcriptionError?: string;
+  transcriptionProvider?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type JournalEntry = {
   id: string;
   date: string;
@@ -27,6 +51,8 @@ export type JournalEntry = {
   body: string;
   mood?: string;
   tags: string[];
+  // Сервер присоединяет метаданные вложений; старые записи приходят без поля.
+  media?: JournalMedia[];
 };
 
 export type CalendarEvent = {

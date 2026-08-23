@@ -1,7 +1,8 @@
 export const dynamic = "force-dynamic";
 
 // Почасовой дайджест для Telegram-бота:
-// невыполненные задачи на сегодня + события на сегодня + прогресс дня.
+// задачи и события на сегодня и завтра + прогресс дня.
+// ✅ — выполненные пункты плана, ❌ — невыполненные.
 // Анти-дублирование: сообщение отправляется ровно один раз за час,
 // даже если внешний планировщик повторит запрос.
 // Внешний планировщик вызывает раз в час: POST /api/v1/reminders/tick.
@@ -18,16 +19,27 @@ const LIST_LIMIT = 15;
 type DigestTask = { id: string; title: string; completed: boolean };
 type DigestEvent = { id: string; title: string; time: string | null };
 
-function digestHash(dayTasks: DigestTask[], events: DigestEvent[]): string {
+function digestHash(dayTasks: DigestTask[], dayEvents: DigestEvent[], nextTasks: DigestTask[], nextEvents: DigestEvent[]): string {
   const input = JSON.stringify({
     tasks: dayTasks.map(({ id, title, completed }) => ({ id, title, completed })),
-    events: events.map(({ id, title, time }) => ({ id, title, time })),
+    events: dayEvents.map(({ id, title, time }) => ({ id, title, time })),
+    nextTasks: nextTasks.map(({ id, title, completed }) => ({ id, title, completed })),
+    nextEvents: nextEvents.map(({ id, title, time }) => ({ id, title, time })),
   });
   let hash = 5381;
   for (let index = 0; index < input.length; index += 1) {
     hash = ((hash << 5) + hash + input.charCodeAt(index)) | 0;
   }
   return hash.toString(36);
+}
+
+// Завтрашняя дата в формате YYYY-MM-DD, исходя из сегодняшней даты планера.
+function nextDayDate(date: string): string {
+  const next = new Date(`${date}T12:00:00`);
+  next.setDate(next.getDate() + 1);
+  const month = String(next.getMonth() + 1).padStart(2, "0");
+  const day = String(next.getDate()).padStart(2, "0");
+  return `${next.getFullYear()}-${month}-${day}`;
 }
 
 function currentDigestHour(now: Date): string {
@@ -64,25 +76,23 @@ function formatList(items: string[]): string[] {
   return lines;
 }
 
-function buildMessage(dayTasks: DigestTask[], dayEvents: DigestEvent[], digestHour: string): string {
+function buildMessage(dayTasks: DigestTask[], dayEvents: DigestEvent[], nextTasks: DigestTask[], nextEvents: DigestEvent[], digestHour: string): string {
   const completedCount = dayTasks.filter((task) => task.completed).length;
-  const pendingTasks = dayTasks.filter((task) => !task.completed);
-  const lines = [`🌙 Workazy · ${digestHour}`, `Выполнено ${completedCount} из ${dayTasks.length}`];
+  const lines = [`🌙 Workazy · ${digestHour}`];
+  if (dayTasks.length) lines.push(`Выполнено ${completedCount} из ${dayTasks.length}`);
 
-  if (!dayTasks.length && !dayEvents.length) {
-    lines.push("", "На сегодня задач и событий нет.");
+  if (!dayTasks.length && !dayEvents.length && !nextTasks.length && !nextEvents.length) {
+    lines.push("", "На сегодня и завтра задач и событий нет.");
     return lines.join("\n");
   }
 
-  if (pendingTasks.length) {
-    lines.push("", "Не выполнено:", ...formatList(pendingTasks.map((task) => `• ${task.title}`)));
-  } else if (dayTasks.length) {
-    lines.push("", "Все задачи на сегодня выполнены ✅");
-  }
+  const taskLine = (task: DigestTask) => `${task.completed ? "✅" : "❌"} ${task.title}`;
+  const eventLine = (event: DigestEvent) => `• ${event.time ? `${event.time} ` : ""}${event.title}`;
 
-  if (dayEvents.length) {
-    lines.push("", "События сегодня:", ...formatList(dayEvents.map((event) => `• ${event.time ? `${event.time} ` : ""}${event.title}`)));
-  }
+  if (dayTasks.length) lines.push("", "План на сегодня:", ...formatList(dayTasks.map(taskLine)));
+  if (dayEvents.length) lines.push("", "События сегодня:", ...formatList(dayEvents.map(eventLine)));
+  if (nextTasks.length) lines.push("", "План на завтра:", ...formatList(nextTasks.map(taskLine)));
+  if (nextEvents.length) lines.push("", "События завтра:", ...formatList(nextEvents.map(eventLine)));
   return lines.join("\n");
 }
 
@@ -91,18 +101,21 @@ export const POST = withApi(async (request) => {
   const force = readQueryBool(url.searchParams.get("force"), "force") ?? false;
   const now = new Date();
   const date = todayDate(now);
+  const nextDate = nextDayDate(date);
   const hourBucket = currentHourBucket(now);
   const digestHour = currentDigestHour(now);
   const lockKey = `telegram-hour:${hourBucket}`;
   const db = await getDb();
 
-  const [dayTasks, dayEvents] = await Promise.all([
+  const [dayTasks, dayEvents, nextTasks, nextEvents] = await Promise.all([
     db.select().from(tasks).where(eq(tasks.date, date)).orderBy(asc(tasks.position), asc(tasks.createdAt)),
     db.select().from(calendarEvents).where(eq(calendarEvents.date, date)).orderBy(asc(calendarEvents.time)),
+    db.select().from(tasks).where(eq(tasks.date, nextDate)).orderBy(asc(tasks.position), asc(tasks.createdAt)),
+    db.select().from(calendarEvents).where(eq(calendarEvents.date, nextDate)).orderBy(asc(calendarEvents.time)),
   ]);
 
   const pendingTasks = dayTasks.filter((task) => !task.completed);
-  const hash = digestHash(dayTasks, dayEvents);
+  const hash = digestHash(dayTasks, dayEvents, nextTasks, nextEvents);
   const digestLog = { entityType: DIGEST_ENTITY, entityId: `${DIGEST_ID}:${hourBucket}`, dueAt: nowIso(), payload: JSON.stringify({ hash, date, hourBucket, digestHour }) } as const;
 
   if (!force) {
@@ -117,7 +130,7 @@ export const POST = withApi(async (request) => {
     }
   }
 
-  const text = buildMessage(dayTasks, dayEvents, digestHour);
+  const text = buildMessage(dayTasks, dayEvents, nextTasks, nextEvents, digestHour);
   try {
     await sendTelegramMessage(text);
   } catch (error) {
@@ -131,5 +144,5 @@ export const POST = withApi(async (request) => {
     await db.update(settings).set({ value: "sent", updatedAt: nowIso() }).where(eq(settings.key, lockKey));
   }
   await db.insert(reminderLogs).values({ ...digestLog, status: "sent", sentAt: nowIso() });
-  return jsonOk({ sent: true, date, hour: digestHour, pending: pendingTasks.length, events: dayEvents.length });
+  return jsonOk({ sent: true, date, hour: digestHour, pending: pendingTasks.length, events: dayEvents.length, tomorrowTasks: nextTasks.length, tomorrowEvents: nextEvents.length });
 });

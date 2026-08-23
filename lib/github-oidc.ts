@@ -21,11 +21,13 @@ const EXPECTED_ISSUER = "https://token.actions.githubusercontent.com";
 const EXPECTED_REPOSITORY = "olejanikopol-cmd/workazy";
 const EXPECTED_WORKFLOW = `${EXPECTED_REPOSITORY}/.github/workflows/hourly-reminder.yml@refs/heads/main`;
 
-function decodeBase64Url(value: string): Uint8Array {
+function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
   const binary = atob(padded);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }
 
 function parseJsonPart<T>(part: string): T | null {

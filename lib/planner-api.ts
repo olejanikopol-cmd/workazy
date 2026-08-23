@@ -1,4 +1,4 @@
-import type { CalendarEvent, Goal, Idea, JournalEntry, PlanTask } from "./types";
+import type { CalendarEvent, Goal, Idea, JournalEntry, JournalMedia, PlanTask } from "./types";
 import { loadPlannerState, savePlannerState } from "./planner-storage";
 
 export type PlannerApiConfig = { baseUrl: string; token: string; enabled: boolean };
@@ -123,4 +123,145 @@ export async function persistPlannerState(state: PlannerSyncState, config: Plann
   if (config.enabled && config.token && config.baseUrl) {
     await pushServerState(config, state);
   }
+}
+
+// ---------- Медиа дневника ----------
+// Бинарные файлы живут только на сервере (R2); клиент оперирует
+// метаданными и короткоживущими подписанными ссылками на байты.
+
+async function apiSend<T>(config: PlannerApiConfig, path: string, init: RequestInit): Promise<T> {
+  const response = await fetch(apiUrl(config, path), {
+    ...init,
+    headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${config.token}` },
+  });
+  const body = await readApiEnvelope<T>(response);
+  if (!response.ok || !body.ok || body.data === undefined) {
+    throw new Error(body.error || `API запрос завершился ошибкой (${response.status})`);
+  }
+  return body.data;
+}
+
+export async function createJournalEntryRemote(config: PlannerApiConfig, entry: { id: string; date: string; title?: string; body?: string; mood?: string; tags?: string[] }): Promise<JournalEntry> {
+  return apiSend<JournalEntry>(config, "/api/v1/journal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(entry),
+  });
+}
+
+export async function updateJournalEntryRemote(config: PlannerApiConfig, id: string, changes: Record<string, unknown>): Promise<JournalEntry & { media?: JournalMedia[] }> {
+  return apiSend<JournalEntry & { media?: JournalMedia[] }>(config, `/api/v1/journal/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+}
+
+export async function deleteJournalEntryRemote(config: PlannerApiConfig, id: string): Promise<void> {
+  await apiSend<{ deleted: boolean }>(config, `/api/v1/journal/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function fetchEntryMedia(config: PlannerApiConfig, entryId: string): Promise<JournalMedia[]> {
+  return apiGet<JournalMedia[]>(config, `/api/v1/journal/${encodeURIComponent(entryId)}/media`);
+}
+
+export async function fetchMediaMetadata(config: PlannerApiConfig, mediaId: string): Promise<JournalMedia> {
+  return apiGet<JournalMedia>(config, `/api/v1/journal/media/${encodeURIComponent(mediaId)}`);
+}
+
+export async function updateMediaTranscriptRemote(config: PlannerApiConfig, mediaId: string, transcript: string): Promise<JournalMedia> {
+  return apiSend<JournalMedia>(config, `/api/v1/journal/media/${encodeURIComponent(mediaId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ transcript }),
+  });
+}
+
+export async function deleteMediaRemote(config: PlannerApiConfig, mediaId: string): Promise<void> {
+  await apiSend<{ deleted: boolean }>(config, `/api/v1/journal/media/${encodeURIComponent(mediaId)}`, { method: "DELETE" });
+}
+
+export async function requestTranscription(config: PlannerApiConfig, mediaId: string): Promise<JournalMedia> {
+  return apiSend<JournalMedia>(config, `/api/v1/journal/media/${encodeURIComponent(mediaId)}/transcribe`, { method: "POST" });
+}
+
+// Короткоживущая ссылка на байты — для <audio>/<video>, скачивания и бэкапа.
+export async function fetchMediaPlaybackUrl(config: PlannerApiConfig, mediaId: string): Promise<string> {
+  const data = await apiGet<{ url: string }>(config, `/api/v1/journal/media/${encodeURIComponent(mediaId)}/file-url`);
+  return data.url.startsWith("http") ? data.url : apiUrl(config, data.url);
+}
+
+// Скачивание байтов по подписанной ссылке (подпись уже внутри).
+export async function fetchMediaBytes(url: string): Promise<Uint8Array> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Не удалось скачать файл (${response.status})`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+export type MediaUploadInput = {
+  journalEntryId: string;
+  type: "audio" | "video";
+  file: Blob;
+  fileName: string;
+  audioTrack?: Blob | null;
+  audioTrackFileName?: string;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  onProgress?: (percent: number) => void;
+  signal?: AbortSignal;
+};
+
+// Загрузка через XMLHttpRequest — только так виден прогресс отправки.
+export function uploadJournalMediaFile(config: PlannerApiConfig, input: MediaUploadInput): Promise<JournalMedia> {
+  return new Promise((resolve, reject) => {
+    let url: string;
+    try {
+      url = apiUrl(config, "/api/v1/journal/media");
+    } catch (error) {
+      reject(error as Error);
+      return;
+    }
+    const form = new FormData();
+    form.append("journalEntryId", input.journalEntryId);
+    form.append("type", input.type);
+    if (input.durationMs) form.append("durationMs", String(input.durationMs));
+    if (input.width) form.append("width", String(input.width));
+    if (input.height) form.append("height", String(input.height));
+    form.append("file", input.file, input.fileName);
+    if (input.audioTrack) form.append("audioTrack", input.audioTrack, input.audioTrackFileName ?? "audio-track");
+
+    const xhr = new XMLHttpRequest();
+    const abortUpload = () => xhr.abort();
+    const cleanup = () => input.signal?.removeEventListener("abort", abortUpload);
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Authorization", `Bearer ${config.token}`);
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable && input.onProgress) {
+        input.onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+      }
+    });
+    xhr.addEventListener("load", () => {
+      cleanup();
+      try {
+        const body = JSON.parse(xhr.responseText) as ApiEnvelope<JournalMedia>;
+        if (xhr.status >= 200 && xhr.status < 300 && body.ok && body.data) {
+          input.onProgress?.(100);
+          resolve(body.data);
+          return;
+        }
+        reject(new Error(body.error || `Загрузка завершилась ошибкой (${xhr.status})`));
+      } catch {
+        reject(new Error(`Сервер вернул некорректный ответ (${xhr.status})`));
+      }
+    });
+    xhr.addEventListener("error", () => { cleanup(); reject(new Error("Не удалось загрузить файл: ошибка сети")); });
+    xhr.addEventListener("abort", () => { cleanup(); reject(new Error("Загрузка отменена")); });
+    if (input.signal?.aborted) {
+      reject(new Error("Загрузка отменена"));
+      return;
+    }
+    input.signal?.addEventListener("abort", abortUpload, { once: true });
+    xhr.send(form);
+  });
 }

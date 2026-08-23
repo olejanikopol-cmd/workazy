@@ -1,10 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, Dispatch, FormEvent, SetStateAction } from "react";
-import type { CalendarEvent, Goal, GoalPeriod, Idea, IdeaCategory, IdeaStatus, JournalEntry, PlanTask } from "@/lib/types";
+import type { CalendarEvent, Goal, GoalPeriod, Idea, IdeaCategory, IdeaStatus, JournalEntry, JournalMedia, PlanTask } from "@/lib/types";
 import type { PlannerApiConfig } from "@/lib/planner-api";
+import { createJournalEntryRemote, deleteJournalEntryRemote, deleteMediaRemote, fetchMediaBytes, fetchMediaPlaybackUrl, requestTranscription, updateJournalEntryRemote, uploadJournalMediaFile } from "@/lib/planner-api";
 import { todayIso } from "@/lib/planner-data";
+import { recorderIsSupported } from "@/lib/media-recorder";
+import { createJournalBackupZip, downloadBlob, entryToMarkdown, mediaFileName, type BackupProgress } from "@/lib/journal-export";
+import { EntryMediaBadges, EntryMediaBlock, MediaDraftCard, MediaRecorderPanel, draftFileName, entrySearchText, type MediaDraft, type RecordingDoneResult } from "./journal-media";
 import { Icon, displayDate, uid } from "./planner-app";
 
 const periodLabels: Record<GoalPeriod, string> = { week: "Неделя", month: "Месяц", year: "Год" };
@@ -67,7 +71,7 @@ export function GoalsScreen({ goals, setGoals }: { goals: Goal[]; setGoals: Disp
   </section>;
 }
 
-export function JournalScreen({ entries, setEntries }: { entries: JournalEntry[]; setEntries: Dispatch<SetStateAction<JournalEntry[]>> }) {
+export function JournalScreen({ entries, setEntries, apiConfig }: { entries: JournalEntry[]; setEntries: Dispatch<SetStateAction<JournalEntry[]>>; apiConfig: PlannerApiConfig }) {
   const [mode, setMode] = useState<"write" | "history">("write");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -76,13 +80,307 @@ export function JournalScreen({ entries, setEntries }: { entries: JournalEntry[]
   const [query, setQuery] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
   const [readingEntry, setReadingEntry] = useState<JournalEntry | null>(null);
-  const moods = ["Спокойно", "Энергично", "Тяжело", "Радостно"];
-  const filtered = entries.filter((entry) => `${entry.title ?? ""} ${entry.body} ${entry.tags.join(" ")}`.toLowerCase().includes(query.toLowerCase()));
+  const [recorderKind, setRecorderKind] = useState<"audio" | "video" | null>(null);
+  const [drafts, setDrafts] = useState<MediaDraft[]>([]);
+  const [draftEntryId, setDraftEntryId] = useState<string | null>(null);
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupProgress, setBackupProgress] = useState<BackupProgress | null>(null);
+  const [backupError, setBackupError] = useState<string | null>(null);
+  const draftEntryIdRef = useRef<string | null>(null);
+  const draftsRef = useRef<MediaDraft[]>([]);
+  const uploadControllersRef = useRef(new Map<string, AbortController>());
 
-  function saveEntry() {
-    if (!body.trim()) return;
-    setEntries((current) => [{ id: uid("entry"), date: todayIso(), title: title.trim(), body: body.trim(), mood, tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean) }, ...current]);
-    setTitle(""); setBody(""); setMood(""); setTags(""); setMode("history");
+  useEffect(() => {
+    draftsRef.current = drafts;
+  }, [drafts]);
+
+  const syncEnabled = apiConfig.enabled && Boolean(apiConfig.token) && Boolean(apiConfig.baseUrl);
+  const moods = ["Спокойно", "Энергично", "Тяжело", "Радостно"];
+  const filtered = entries.filter((entry) => entrySearchText(entry).toLowerCase().includes(query.toLowerCase()));
+
+  function setDraftEntryIdBoth(id: string | null) {
+    draftEntryIdRef.current = id;
+    setDraftEntryId(id);
+  }
+
+  function updateDraft(key: string, changes: Partial<MediaDraft>) {
+    setDrafts((current) => current.map((item) => (item.key === key ? { ...item, ...changes } : item)));
+  }
+
+  // Запись-якорь сразу попадает в локальное состояние: иначе любая
+  // синхронизация (PUT /state) посчитала бы её удалённой и вычистила бы
+  // вместе с уже загруженными файлами.
+  function upsertAnchorEntry(entryId: string, media?: JournalMedia[]) {
+    setEntries((current) => {
+      if (!current.some((item) => item.id === entryId)) {
+        return [{ id: entryId, date: todayIso(), title: "", body: "", tags: [], media: media ?? [] }, ...current];
+      }
+      if (!media) return current;
+      return current.map((item) => (item.id === entryId ? { ...item, media } : item));
+    });
+  }
+
+  // Актуальный список метаданных для якоря: серверные данные черновиков
+  // плюс свежий элемент (состояние черновиков может ещё не успеть в эффект).
+  function anchorMediaList(updated: JournalMedia): JournalMedia[] {
+    const existing = draftsRef.current
+      .filter((draft) => draft.server && draft.server.id !== updated.id)
+      .map((draft) => draft.server as JournalMedia);
+    return [...existing, updated];
+  }
+
+  // Черновик появляется сразу после остановки записи. При включённой
+  // синхронизации файл уходит на сервер, затем запускается расшифровка.
+  // Ошибка расшифровки не трогает файл — повтор работает по сохранённому.
+  async function uploadDraft(key: string) {
+    const draft = draftsRef.current.find((item) => item.key === key);
+    if (!draft || draft.mediaId || !syncEnabled) return;
+
+    let entryId = draftEntryIdRef.current;
+    try {
+      if (!entryId) {
+        entryId = uid("entry");
+        await createJournalEntryRemote(apiConfig, { id: entryId, date: todayIso(), body: "" });
+        setDraftEntryIdBoth(entryId);
+        upsertAnchorEntry(entryId);
+      }
+    } catch (error) {
+      updateDraft(key, { status: { phase: "error", message: error instanceof Error ? error.message : "Не удалось создать запись на сервере" } });
+      return;
+    }
+
+    updateDraft(key, { status: { phase: "uploading", percent: 0 } });
+    const controller = new AbortController();
+    uploadControllersRef.current.set(key, controller);
+    try {
+      const media = await uploadJournalMediaFile(apiConfig, {
+        journalEntryId: entryId,
+        type: draft.type,
+        file: draft.blob,
+        fileName: draftFileName(draft),
+        audioTrack: draft.audioTrack,
+        audioTrackFileName: draft.audioTrack ? `track-${draft.key.slice(-5)}.webm` : undefined,
+        durationMs: draft.durationMs,
+        width: draft.width,
+        height: draft.height,
+        onProgress: (percent) => updateDraft(key, { status: { phase: "uploading", percent } }),
+        signal: controller.signal,
+      });
+      if (!draftsRef.current.some((item) => item.key === key)) {
+        await deleteMediaRemote(apiConfig, media.id);
+        return;
+      }
+      updateDraft(key, { mediaId: media.id, server: media, status: { phase: "transcribing" } });
+      upsertAnchorEntry(entryId, anchorMediaList(media));
+      const transcribed = await requestTranscription(apiConfig, media.id);
+      updateDraft(key, {
+        server: transcribed,
+        status: transcribed.transcriptionStatus === "ready"
+          ? { phase: "ready" }
+          : { phase: "error", message: transcribed.transcriptionError ?? "Не удалось расшифровать речь" },
+      });
+      upsertAnchorEntry(entryId, anchorMediaList(transcribed));
+    } catch (error) {
+      updateDraft(key, { status: { phase: "error", message: error instanceof Error ? error.message : "Не удалось загрузить файл" } });
+    } finally {
+      uploadControllersRef.current.delete(key);
+    }
+  }
+
+  // Повтор: если файла ещё нет на сервере — вся загрузка, иначе только расшифровка.
+  async function retryDraft(draft: MediaDraft) {
+    setDraftError(null);
+    if (!draft.mediaId) {
+      await uploadDraft(draft.key);
+      return;
+    }
+    updateDraft(draft.key, { status: { phase: "transcribing" } });
+    try {
+      const transcribed = await requestTranscription(apiConfig, draft.mediaId);
+      updateDraft(draft.key, {
+        server: transcribed,
+        status: transcribed.transcriptionStatus === "ready"
+          ? { phase: "ready" }
+          : { phase: "error", message: transcribed.transcriptionError ?? "Не удалось расшифровать речь" },
+      });
+      const entryId = draftEntryIdRef.current;
+      if (entryId) upsertAnchorEntry(entryId, anchorMediaList(transcribed));
+    } catch (error) {
+      updateDraft(draft.key, { status: { phase: "error", message: error instanceof Error ? error.message : "Не удалось повторить расшифровку" } });
+    }
+  }
+
+  // Синхронизацию включили позже — догоняем локальные черновики.
+  useEffect(() => {
+    if (!syncEnabled) return;
+    draftsRef.current
+      .filter((item) => item.status.phase === "local")
+      .forEach((item) => void uploadDraft(item.key));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncEnabled]);
+
+  async function removeDraft(draft: MediaDraft) {
+    uploadControllersRef.current.get(draft.key)?.abort();
+    if (draft.mediaId) {
+      try {
+        await deleteMediaRemote(apiConfig, draft.mediaId);
+      } catch (error) {
+        setDraftError(error instanceof Error ? error.message : "Не удалось удалить файл с сервера");
+        return;
+      }
+    }
+    URL.revokeObjectURL(draft.previewUrl);
+    const remaining = draftsRef.current.filter((item) => item.key !== draft.key);
+    setDrafts(remaining);
+    draftsRef.current = remaining;
+    const entryId = draftEntryIdRef.current;
+    if (draft.mediaId) {
+      // Убираем файл из записи-якоря в локальном состоянии.
+      if (entryId) {
+        const media = remaining.filter((item) => item.server).map((item) => item.server as JournalMedia);
+        upsertAnchorEntry(entryId, media);
+      }
+    }
+    // Пустая серверная запись-заготовка без файлов и текста больше не нужна.
+    if (entryId && remaining.length === 0 && !body.trim()) {
+      setDraftEntryIdBoth(null);
+      setEntries((current) => current.filter((item) => item.id !== entryId));
+      await deleteJournalEntryRemote(apiConfig, entryId).catch(() => undefined);
+    }
+  }
+
+  function startRecorder(kind: "audio" | "video") {
+    if (recorderKind) return;
+    if (!recorderIsSupported()) {
+      setDraftError("Браузер не поддерживает запись аудио и видео.");
+      return;
+    }
+    setDraftError(null);
+    setRecorderKind(kind);
+  }
+
+  function handleRecordingDone(result: RecordingDoneResult) {
+    const kind = recorderKind ?? "audio";
+    setRecorderKind(null);
+    const key = uid("media-draft");
+    const draft: MediaDraft = {
+      key,
+      type: kind,
+      blob: result.blob,
+      audioTrack: kind === "video" ? result.audioTrack : null,
+      mimeType: result.mimeType,
+      durationMs: result.durationMs,
+      width: result.width,
+      height: result.height,
+      previewUrl: URL.createObjectURL(result.blob),
+      status: { phase: "local" },
+    };
+    setDrafts((current) => [...current, draft]);
+    draftsRef.current = [...draftsRef.current, draft];
+    if (syncEnabled) void uploadDraft(key);
+  }
+
+  async function saveEntry() {
+    setDraftError(null);
+    const hasText = body.trim().length > 0;
+    if (!hasText && !drafts.length) return;
+    if (drafts.some((draft) => draft.status.phase === "uploading")) {
+      setDraftError("Подожди, пока файлы загрузятся на сервер.");
+      return;
+    }
+    if (drafts.some((draft) => !draft.mediaId)) {
+      setDraftError("Не все записи попали на сервер. Включи синхронизацию и повтори загрузку или убери черновики.");
+      return;
+    }
+
+    const parsedTags = tags.split(",").map((tag) => tag.trim()).filter(Boolean);
+    const media = drafts.map((draft) => draft.server).filter((item): item is JournalMedia => Boolean(item));
+    const entryId = draftEntryId ?? uid("entry");
+    setSaving(true);
+
+    try {
+      if (draftEntryId) {
+        // Серверная запись уже создана под файлы — дозаполняем её текстом.
+        try {
+          await updateJournalEntryRemote(apiConfig, draftEntryId, {
+            title: title.trim() || null,
+            body: body.trim() || null,
+            mood: mood || null,
+            tags: parsedTags,
+          });
+        } catch {
+          // Текст доберётся следующей синхронизацией; запись и медиа уже на сервере.
+        }
+      }
+      setEntries((current) => {
+        const rest = current.filter((item) => item.id !== entryId);
+        return [{ id: entryId, date: todayIso(), title: title.trim(), body: body.trim(), mood, tags: parsedTags, media }, ...rest];
+      });
+      drafts.forEach((draft) => URL.revokeObjectURL(draft.previewUrl));
+      setTitle(""); setBody(""); setMood(""); setTags("");
+      setDrafts([]); setDraftEntryIdBoth(null);
+      setMode("history");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function updateEntryMedia(entryId: string, media: JournalMedia[]) {
+    setEntries((current) => current.map((item) => (item.id === entryId ? { ...item, media } : item)));
+    setReadingEntry((current) => (current && current.id === entryId ? { ...current, media } : current));
+  }
+
+  function exportEntry(entry: JournalEntry, format: "md" | "txt" | "json") {
+    const baseName = `journal-${entry.date}-${entry.id.slice(-5)}`;
+    if (format === "md") {
+      downloadBlob(entryToMarkdown(entry), `${baseName}.md`, "text/markdown;charset=utf-8");
+      return;
+    }
+    if (format === "txt") {
+      const lines = [`${entry.title?.trim() || "Запись дневника"} — ${entry.date}`, ""];
+      if ((entry.body ?? "").trim()) lines.push((entry.body ?? "").trim(), "");
+      for (const item of entry.media ?? []) {
+        lines.push(`${item.type === "video" ? "Видео" : "Аудио"}:`, item.transcript ?? "(транскрипт недоступен)", "");
+      }
+      downloadBlob(lines.join("\n"), `${baseName}.txt`, "text/plain;charset=utf-8");
+      return;
+    }
+    downloadBlob(JSON.stringify(entry, null, 2), `${baseName}.json`, "application/json;charset=utf-8");
+  }
+
+  async function downloadEntryMedia(entry: JournalEntry) {
+    try {
+      for (const item of entry.media ?? []) {
+        const url = await fetchMediaPlaybackUrl(apiConfig, item.id);
+        const bytes = await fetchMediaBytes(url);
+        downloadBlob(bytes, mediaFileName(item), item.mimeType);
+      }
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "Не удалось скачать медиафайл");
+    }
+  }
+
+  async function runFullBackup() {
+    if (!syncEnabled) {
+      setBackupError("Полный бэкап доступен при включённой синхронизации: медиафайлы живут на сервере.");
+      return;
+    }
+    setBackupBusy(true);
+    setBackupError(null);
+    setBackupProgress(null);
+    try {
+      const zip = await createJournalBackupZip(entries, async (item) => {
+        const url = await fetchMediaPlaybackUrl(apiConfig, item.id);
+        return fetchMediaBytes(url);
+      }, setBackupProgress);
+      downloadBlob(zip, `workazy-journal-backup-${todayIso()}.zip`, "application/zip");
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : "Не удалось собрать бэкап");
+    } finally {
+      setBackupBusy(false);
+    }
   }
 
   function removeEntry(entry: JournalEntry) {
@@ -107,14 +405,23 @@ export function JournalScreen({ entries, setEntries }: { entries: JournalEntry[]
       <div className="journal-date">{new Intl.DateTimeFormat("ru-RU", { weekday: "long", day: "numeric", month: "long" }).format(new Date())}</div>
       <input className="journal-title-input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Название — необязательно" aria-label="Название записи" />
       <textarea className="journal-body-input" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Что сегодня происходило? Что чувствуешь?" aria-label="Текст записи" />
+      <div className="journal-media-actions">
+        <button className="ghost-action" onClick={() => startRecorder("audio")} disabled={recorderKind !== null}><Icon name="mic" size={16} />Голосовая запись</button>
+        <button className="ghost-action" onClick={() => startRecorder("video")} disabled={recorderKind !== null}><Icon name="video" size={16} />Видео</button>
+      </div>
+      {!syncEnabled && <p className="media-hint">Голос и видео живут в облаке дневника. Включи синхронизацию в настройках, чтобы записывать их.</p>}
+      {draftError && <p className="media-error" role="alert">{draftError}</p>}
+      {recorderKind && <MediaRecorderPanel kind={recorderKind} onDone={handleRecordingDone} onCancel={() => setRecorderKind(null)} />}
+      {!!drafts.length && <div className="draft-list">{drafts.map((draft) => <MediaDraftCard key={draft.key} draft={draft} onRemove={() => void removeDraft(draft)} onRetry={() => void retryDraft(draft)} />)}</div>}
       <div className="mood-row"><span>Настроение</span><div>{moods.map((item) => <button className={mood === item ? "active" : ""} onClick={() => setMood(mood === item ? "" : item)} key={item}>{item}</button>)}</div></div>
       <label className="tag-input"><span>#</span><input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="теги через запятую" /></label>
-      <button className="primary-action journal-save" onClick={saveEntry} disabled={!body.trim()}><span><Icon name="check" size={18} /></span>Сохранить запись</button>
+      <button className="primary-action journal-save" onClick={() => void saveEntry()} disabled={saving || (!body.trim() && !drafts.length)}><span><Icon name="check" size={18} /></span>Сохранить запись</button>
     </div> : <div className="journal-history">
       <label className="search-box"><Icon name="search" size={18} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Найти в записях" /></label>
       <div className="entry-list">{filtered.map((entry) => <article className="entry-card" key={entry.id} role="button" tabIndex={0} onClick={() => setReadingEntry(entry)} onKeyDown={(event) => handleEntryKeyDown(event, entry)}>
-        <div className="entry-meta"><span>{displayDate(entry.date)}</span><div className="entry-meta-actions">{entry.mood && <span className="mood-badge">{entry.mood}</span>}<button className="entry-delete" onClick={(event) => { event.stopPropagation(); removeEntry(entry); }} aria-label={`Удалить запись «${entry.title?.trim() || displayDate(entry.date)}»`}><Icon name="close" size={16} /></button></div></div>
-        {entry.title && <h2>{entry.title}</h2>}<p>{entry.body}</p>
+        <div className="entry-meta"><span>{displayDate(entry.date)}</span><div className="entry-meta-actions"><EntryMediaBadges entry={entry} />{entry.mood && <span className="mood-badge">{entry.mood}</span>}<button className="entry-delete" onClick={(event) => { event.stopPropagation(); removeEntry(entry); }} aria-label={`Удалить запись «${entry.title?.trim() || displayDate(entry.date)}»`}><Icon name="close" size={16} /></button></div></div>
+        {entry.title && <h2>{entry.title}</h2>}
+        <p>{(entry.body ?? "").trim() || (entry.media ?? [])[0]?.transcript || ((entry.media ?? []).length ? ((entry.media ?? [])[0].type === "video" ? "Видеозапись без текста" : "Голосовая запись без текста") : "")}</p>
         {!!entry.tags.length && <div className="entry-tags">{entry.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
       </article>)}</div>
     </div>}
@@ -124,6 +431,13 @@ export function JournalScreen({ entries, setEntries }: { entries: JournalEntry[]
       <p className="sheet-description">Выбери период. Кнопка откроет аккуратную печатную версию, которую можно сохранить как PDF.</p>
       <div className="export-options"><label><input type="radio" name="range" defaultChecked /> Последняя запись</label><label><input type="radio" name="range" /> Эта неделя</label><label><input type="radio" name="range" /> Этот месяц</label><label><input type="radio" name="range" /> Весь дневник</label></div>
       <button className="sheet-submit" onClick={() => window.print()}><Icon name="download" size={18} />Открыть печатную версию</button>
+      <div className="export-backup">
+        <h3>Полный бэкап</h3>
+        <p className="sheet-description">ZIP-архив со всеми записями: текст, транскрипты и оригиналы аудио/видео. Секреты в архив не попадают.</p>
+        {backupProgress && <p className="sheet-description">Файлы: {backupProgress.filesDone}/{backupProgress.filesTotal} — {backupProgress.current}</p>}
+        {backupError && <p className="media-error" role="alert">{backupError}</p>}
+        <button className="sheet-submit" onClick={() => void runFullBackup()} disabled={backupBusy}><Icon name="download" size={18} />{backupBusy ? "Собираю бэкап…" : "Скачать полный бэкап (ZIP)"}</button>
+      </div>
     </section></div>}
 
     {readingEntry && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setReadingEntry(null)}>
@@ -131,8 +445,18 @@ export function JournalScreen({ entries, setEntries }: { entries: JournalEntry[]
         <div className="modal-handle" />
         <div className="editor-head"><div><span>{displayDate(readingEntry.date)}</span><h2 id="entry-reader-title">{readingEntry.title?.trim() || "Запись дневника"}</h2></div><button className="icon-button" onClick={() => setReadingEntry(null)} aria-label="Закрыть запись"><Icon name="close" /></button></div>
         {readingEntry.mood && <span className="reader-mood">{readingEntry.mood}</span>}
-        <div className="entry-reader-body">{readingEntry.body}</div>
+        {(readingEntry.body ?? "").trim() && <div className="entry-reader-body">{readingEntry.body}</div>}
+        {syncEnabled && <EntryMediaBlock config={apiConfig} entry={readingEntry} onMediaUpdated={(media) => updateEntryMedia(readingEntry.id, media)} />}
         {!!readingEntry.tags.length && <div className="entry-tags reader-tags">{readingEntry.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
+        <div className="reader-export">
+          <span className="transcript-label">Экспорт записи</span>
+          <div className="reader-export-actions">
+            <button className="ghost-action" onClick={() => exportEntry(readingEntry, "md")}><Icon name="download" size={14} />Markdown</button>
+            <button className="ghost-action" onClick={() => exportEntry(readingEntry, "txt")}><Icon name="download" size={14} />Текст</button>
+            <button className="ghost-action" onClick={() => exportEntry(readingEntry, "json")}><Icon name="download" size={14} />JSON</button>
+            {!!(readingEntry.media ?? []).length && <button className="ghost-action" onClick={() => void downloadEntryMedia(readingEntry)}><Icon name="download" size={14} />Скачать медиа</button>}
+          </div>
+        </div>
       </section>
     </div>}
   </section>;

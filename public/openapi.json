@@ -151,7 +151,7 @@
       "get": {
         "operationId": "listJournalEntries",
         "summary": "Записи дневника",
-        "description": "Без параметра date — последние 50 записей. С параметром date — записи за дату. Запись: id, date, title, body, mood, tags.",
+        "description": "Без параметра date — последние 50 записей. С параметром date — записи за дату. Запись: id, date, title, body, mood, tags, media. Поле media — массив вложений: id, type (audio|video), mimeType, sizeBytes, durationMs, transcript, transcriptEdited, transcriptionStatus (pending|processing|ready|error), transcriptionError, createdAt.",
         "parameters": [
           { "name": "date", "in": "query", "schema": { "type": "string" }, "description": "Дата YYYY-MM-DD" }
         ],
@@ -160,17 +160,18 @@
       "post": {
         "operationId": "addJournalEntry",
         "summary": "Создать запись в дневнике",
+        "description": "Создаёт запись дневника. Текст может быть пустым, если запись состоит из аудио или видео (вложения загружаются отдельно через загрузку медиа). Можно передать собственный id записи, чтобы заранее привязать к ней медиа.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["body"],
                 "properties": {
+                  "id": { "type": "string", "description": "Необязательный идентификатор записи (латинские буквы, цифры, - и _). Если не передать, сервер сгенерирует сам" },
                   "date": { "type": "string", "description": "Дата записи, по умолчанию сегодня" },
                   "title": { "type": "string" },
-                  "body": { "type": "string", "description": "Текст записи" },
+                  "body": { "type": "string", "description": "Текст записи. Необязателен для записей из аудио или видео" },
                   "mood": { "type": "string" },
                   "tags": { "type": "array", "items": { "type": "string" } }
                 }
@@ -182,6 +183,13 @@
       }
     },
     "/api/v1/journal/{id}": {
+      "get": {
+        "operationId": "getJournalEntry",
+        "summary": "Запись дневника по идентификатору",
+        "description": "Возвращает одну запись дневника вместе с метаданными её аудио и видео вложений (поле media), включая транскрипты.",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "responses": { "200": { "description": "Запись дневника", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      },
       "patch": {
         "operationId": "updateJournalEntry",
         "summary": "Обновить запись дневника",
@@ -210,6 +218,24 @@
         "summary": "Удалить запись дневника",
         "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
         "responses": { "200": { "description": "Запись удалена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/journal/{id}/media": {
+      "get": {
+        "operationId": "listJournalMedia",
+        "summary": "Аудио и видео вложения записи дневника",
+        "description": "Возвращает метаданные медиа-вложений записи: id, type (audio|video), mimeType, sizeBytes, durationMs, transcript, transcriptEdited, transcriptionStatus (pending|processing|ready|error), transcriptionError, transcriptionProvider, createdAt. Байты файлов отдаются только по короткоживущей подписанной ссылке и недоступны ассистенту.",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "responses": { "200": { "description": "Список вложений", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+      }
+    },
+    "/api/v1/journal/media/{id}": {
+      "get": {
+        "operationId": "getMediaMetadata",
+        "summary": "Метаданные одного аудио или видео вложения дневника",
+        "description": "Возвращает метаданные вложения, включая готовый транскрипт речи. Бинарное содержимое не возвращается: только описание и текст расшифровки.",
+        "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
+        "responses": { "200": { "description": "Метаданные вложения", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       }
     },
     "/api/v1/events": {

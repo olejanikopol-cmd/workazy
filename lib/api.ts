@@ -25,7 +25,7 @@ export function jsonError(status: number, error: string): Response {
 // Пока один статический токен (секрет WORKAZY_API_TOKEN).
 // Когда появится настоящая авторизация, она подключится только здесь.
 
-async function getExpectedApiToken(): Promise<string | undefined> {
+export async function getExpectedApiToken(): Promise<string | undefined> {
   if (process.env.WORKAZY_API_TOKEN) return process.env.WORKAZY_API_TOKEN;
   try {
     const { env } = await import("cloudflare:workers");
@@ -67,6 +67,18 @@ export function readText(value: unknown, field: string, options?: TextOptions): 
 // Обязательное текстовое поле: бросает 400 и гарантирует тип string.
 export function requireText(value: unknown, field: string, options: { maxLength?: number } = {}): string {
   return readText(value, field, { ...options, required: true }) as string;
+}
+
+// Идентификаторы ресурсов попадают в ключи R2 и URL подписанных ссылок,
+// поэтому ограничиваем их безопасным набором символов.
+const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
+
+export function requireResourceId(value: unknown, field: string): string {
+  const text = requireText(value, field, { maxLength: 80 });
+  if (!ID_PATTERN.test(text)) {
+    throw new ApiError(400, `Поле «${field}» может содержать только латинские буквы, цифры, «-» и «_»`);
+  }
+  return text;
 }
 
 // undefined — поле отсутствует (не менять), null — очистить, строка — записать.
@@ -248,7 +260,7 @@ export function entryToJson(row: typeof journalEntries.$inferSelect) {
   } catch {
     tags = [];
   }
-  return { id: row.id, date: row.date, title: row.title ?? undefined, body: row.body, mood: row.mood ?? undefined, tags, createdAt: row.createdAt, updatedAt: row.updatedAt };
+  return { id: row.id, date: row.date, title: row.title ?? undefined, body: row.body ?? "", mood: row.mood ?? undefined, tags, createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
 
 export function eventToJson(row: typeof calendarEvents.$inferSelect) {

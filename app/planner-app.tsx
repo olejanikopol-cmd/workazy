@@ -46,6 +46,12 @@ export function Icon({ name, size = 22 }: { name: string; size?: number }) {
   if (name === "bell") return <svg {...common}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4" /></svg>;
   if (name === "telegram") return <svg {...common}><path d="m21 4-3 16-6-4-3 3-1-5-5-2 18-8Z" /><path d="m8 14 10-7-8 9" /></svg>;
   if (name === "moon") return <svg {...common}><path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z" /></svg>;
+  if (name === "mic") return <svg {...common}><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" /></svg>;
+  if (name === "video") return <svg {...common}><rect x="3" y="6.5" width="13" height="11" rx="2.5" /><path d="m16 11 5-3v8l-5-3" /></svg>;
+  if (name === "pause") return <svg {...common}><path d="M9 5.5v13M15 5.5v13" /></svg>;
+  if (name === "play") return <svg {...common}><path d="M8 5.5v13l10-6.5-10-6.5Z" /></svg>;
+  if (name === "refresh") return <svg {...common}><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4.5h-4.5" /></svg>;
+  if (name === "stop") return <svg {...common}><rect x="6.5" y="6.5" width="11" height="11" rx="2" /></svg>;
   return null;
 }
 
@@ -89,7 +95,12 @@ export default function PlannerApp() {
     if (saved) {
       if (Array.isArray(saved.tasks)) setTasks(saved.tasks as PlanTask[]);
       if (Array.isArray(saved.goals)) setGoals(saved.goals as Goal[]);
-      if (Array.isArray(saved.entries)) setEntries(saved.entries as JournalEntry[]);
+      if (Array.isArray(saved.entries)) {
+        setEntries((saved.entries as JournalEntry[]).map((entry) => ({
+          ...entry,
+          body: typeof entry.body === "string" ? entry.body : "",
+        })));
+      }
       if (Array.isArray(saved.events)) setEvents(saved.events as CalendarEvent[]);
       if (Array.isArray(saved.ideas)) setIdeas(saved.ideas as Idea[]);
     }
@@ -351,7 +362,7 @@ export default function PlannerApp() {
         </section>}
 
         {activeTab === "goals" && <GoalsScreen goals={goals} setGoals={setGoals} />}
-        {activeTab === "journal" && <JournalScreen entries={entries} setEntries={setEntries} />}
+        {activeTab === "journal" && <JournalScreen entries={entries} setEntries={setEntries} apiConfig={apiConfig} />}
         {activeTab === "calendar" && <CalendarScreen tasks={tasks} events={events} setEvents={setEvents} selectedDate={selectedDate} setSelectedDate={setSelectedDate} />}
         {activeTab === "progress" && <ProgressScreen tasks={tasks} goals={goals} entries={entries} />}
         {activeTab === "ideas" && <IdeasScreen ideas={ideas} setIdeas={setIdeas} />}

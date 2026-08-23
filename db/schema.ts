@@ -28,19 +28,51 @@ export const goals = sqliteTable("goals", {
   updatedAt: text("updated_at").notNull(),
 });
 
+// body может быть пустой: голосовые и видеозаписи создают запись без текста.
+// Пустота сохраняется как NULL; API наружу всегда отдаёт строку (минимум "").
 export const journalEntries = sqliteTable(
   "journal_entries",
   {
     id: text("id").primaryKey(),
     date: text("date").notNull(),
     title: text("title"),
-    body: text("body").notNull(),
+    body: text("body"),
     mood: text("mood"),
     tags: text("tags").notNull().default("[]"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
   (table) => [index("idx_journal_entries_date").on(table.date)],
+);
+
+// Медиа дневника: бинарные файлы живут только в R2 (биндинг MEDIA),
+// здесь — метаданные, связь с записью и результат расшифровки.
+// Одна запись дневника может иметь несколько вложений.
+export const journalMedia = sqliteTable(
+  "journal_media",
+  {
+    id: text("id").primaryKey(),
+    journalEntryId: text("journal_entry_id").notNull(),
+    type: text("type", { enum: ["audio", "video"] }).notNull(),
+    storageKey: text("storage_key").notNull(),
+    // Отдельная лёгкая аудиодорожка видеозаписи — вход для Whisper и retry.
+    // Живёт вместе с оригиналом, чтобы видео никогда не уходило целиком в ASR.
+    transcriptionInputKey: text("transcription_input_key"),
+    mimeType: text("mime_type").notNull(),
+    originalFilename: text("original_filename"),
+    sizeBytes: integer("size_bytes").notNull(),
+    durationMs: integer("duration_ms"),
+    width: integer("width"),
+    height: integer("height"),
+    transcript: text("transcript"),
+    transcriptEdited: integer("transcript_edited", { mode: "boolean" }).notNull().default(false),
+    transcriptionStatus: text("transcription_status", { enum: ["pending", "processing", "ready", "error"] }).notNull().default("pending"),
+    transcriptionError: text("transcription_error"),
+    transcriptionProvider: text("transcription_provider"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("idx_journal_media_entry").on(table.journalEntryId)],
 );
 
 export const calendarEvents = sqliteTable(
