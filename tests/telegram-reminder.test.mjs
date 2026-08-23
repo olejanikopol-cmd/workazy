@@ -16,29 +16,51 @@ test("telegram digest route deduplicates by stored hash and logs every outcome",
   assert.match(source, /currentHourBucket\(/, "каждый час получает отдельный lock bucket");
   assert.match(source, /onConflictDoNothing/, "повторный запуск в том же часе не дублирует отправку");
   assert.match(source, /currentDigestHour\(/, "в сообщение попадает ровный часовой слот");
-  assert.match(source, /buildMessage\(dayTasks, dayEvents, nextTasks, nextEvents, digestHour\)/, "Telegram-текст использует округлённое время");
+  assert.match(source, /buildMessage\(overdueTasks, dayTasks, dayEvents, nextTasks, nextEvents, digestHour, previousDate\)/, "Telegram-текст использует хвосты и округлённое время");
   assert.match(source, /✅/, "выполненные пункты плана помечаются зелёной галочкой");
   assert.match(source, /❌/, "невыполненные пункты плана помечаются красным крестиком");
-  assert.match(source, /nextDayDate/, "дайджест включает задачи и события на завтра");
+  assert.match(source, /shiftDayDate\(date, -1\)/, "дайджест включает незакрытые задачи прошлых дней");
+  assert.match(source, /lt\(tasks\.date, date\)/, "старые хвосты не исчезают через сутки");
+  assert.match(source, /eq\(tasks\.completed, false\)/, "в хвосты попадают только незавершённые задачи");
+  assert.match(source, /За вчера осталось/, "вчерашние хвосты выделены отдельно");
   assert.match(source, /План на завтра/, "завтрашний план попадает в сообщение");
 });
 
 test("digest hash changes when visible Telegram content changes", async () => {
   const source = await readFile(new URL("app/api/v1/reminders/tick/route.ts", root), "utf8");
   const helpers = source.slice(source.indexOf("const DIGEST_ENTITY"), source.indexOf("export const POST"));
-  const output = ts.transpileModule(`${helpers}\nexport { digestHash };`, {
+  const output = ts.transpileModule(`${helpers}\nexport { buildMessage, digestHash, shiftDayDate };`, {
     compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const digest = await import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
-  const tasks = [{ id: "task-1", title: "Первая задача", completed: false }];
+  const overdue = [{ id: "task-old", title: "Вчерашняя задача", date: "2026-08-23", completed: false }];
+  const tasks = [{ id: "task-1", title: "Первая задача", date: "2026-08-24", completed: false }];
   const events = [{ id: "event-1", title: "Созвон", time: "12:00" }];
-  const nextTasks = [{ id: "task-2", title: "Завтрашняя задача", completed: false }];
-  const initial = digest.digestHash(tasks, events, nextTasks, []);
+  const nextTasks = [{ id: "task-2", title: "Завтрашняя задача", date: "2026-08-25", completed: false }];
+  const initial = digest.digestHash(overdue, tasks, events, nextTasks, []);
 
-  assert.notEqual(initial, digest.digestHash([{ ...tasks[0], title: "Новый текст" }], events, nextTasks, []));
-  assert.notEqual(initial, digest.digestHash([{ ...tasks[0], completed: true }], events, nextTasks, []));
-  assert.notEqual(initial, digest.digestHash(tasks, [{ ...events[0], time: "13:00" }], nextTasks, []));
-  assert.notEqual(initial, digest.digestHash(tasks, events, [], []));
+  assert.notEqual(initial, digest.digestHash([{ ...overdue[0], title: "Другой хвост" }], tasks, events, nextTasks, []));
+  assert.notEqual(initial, digest.digestHash(overdue, [{ ...tasks[0], title: "Новый текст" }], events, nextTasks, []));
+  assert.notEqual(initial, digest.digestHash(overdue, [{ ...tasks[0], completed: true }], events, nextTasks, []));
+  assert.notEqual(initial, digest.digestHash(overdue, tasks, [{ ...events[0], time: "13:00" }], nextTasks, []));
+  assert.notEqual(initial, digest.digestHash(overdue, tasks, events, [], []));
+
+  assert.equal(digest.shiftDayDate("2026-03-01", -1), "2026-02-28");
+  assert.equal(digest.shiftDayDate("2026-12-31", 1), "2027-01-01");
+  const text = digest.buildMessage(overdue, tasks, events, nextTasks, [], "00:00", "2026-08-23");
+  assert.match(text, /За вчера осталось 1 пункт/);
+  assert.match(text, /Открой план за 23\.08/);
+  assert.match(text, /План на завтра:[\s\S]*Завтрашняя задача/);
+  const longText = digest.buildMessage(
+    Array.from({ length: 20 }, (_, index) => ({ id: `old-${index}`, title: "Длинный хвост ".repeat(30), date: "2026-08-22", completed: false })),
+    tasks,
+    events,
+    nextTasks,
+    [],
+    "00:00",
+    "2026-08-23",
+  );
+  assert.ok(longText.length <= 3900, "дайджест помещается в одно Telegram-сообщение");
 });
 
 test("telegram client uses the Bot API directly and reads secrets from env", async () => {

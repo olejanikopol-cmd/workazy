@@ -1,5 +1,5 @@
 {
-  "openapi": "3.0.3",
+  "openapi": "3.1.0",
   "info": {
     "title": "Workazy Custom GPT Actions",
     "version": "1.0.0",
@@ -23,7 +23,13 @@
         "description": "Возвращает задачи на указанную дату. Без date возвращает задачи на сегодня. completed=false оставляет только невыполненные задачи, completed=true — только выполненные.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/DateQuery"
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "description": "Дата в формате YYYY-MM-DD",
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "completed",
@@ -68,7 +74,12 @@
         "description": "Изменяет текст, дату, порядок или статус выполнения задачи.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/IdPath"
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -93,7 +104,12 @@
         "description": "Безвозвратно удаляет задачу по идентификатору.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/IdPath"
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -110,7 +126,12 @@
         "description": "Помечает задачу выполненной. Если известен только текст, сначала вызови listTasks и найди идентификатор задачи.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/IdPath"
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -170,7 +191,12 @@
         "description": "Изменяет название, описание, период, прогресс, дедлайн или статус цели.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/IdPath"
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -195,7 +221,12 @@
         "description": "Безвозвратно удаляет цель по идентификатору.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/IdPath"
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -212,7 +243,13 @@
         "description": "Возвращает записи дневника за указанную дату. Без date возвращает последние 50 записей. Готовые транскрипты существующих вложений могут присутствовать в ответе как часть записи.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/DateQuery"
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "description": "Дата в формате YYYY-MM-DD",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -249,7 +286,12 @@
         "description": "Возвращает запись дневника по идентификатору, включая доступные текстовые транскрипты её вложений.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/IdPath"
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -264,7 +306,12 @@
         "description": "Изменяет дату, заголовок, текст, настроение или теги записи дневника.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/IdPath"
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -339,7 +386,12 @@
         "description": "Изменяет текст, описание, категорию или статус идеи.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/IdPath"
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -364,7 +416,12 @@
         "description": "Безвозвратно удаляет идею по идентификатору.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/IdPath"
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -381,7 +438,13 @@
         "description": "Возвращает события за указанную дату. Без date возвращает ближайшие события.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/DateQuery"
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "description": "Дата в формате YYYY-MM-DD",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -418,7 +481,12 @@
         "description": "Изменяет название, дату, время, заметку или текст напоминания события.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/IdPath"
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -443,7 +511,12 @@
         "description": "Безвозвратно удаляет событие по идентификатору.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/IdPath"
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -460,7 +533,13 @@
         "description": "Возвращает задачи, события, записи дневника, активные идеи и готовый текст сводки за дату. Без date используется сегодняшний день.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/DateQuery"
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "description": "Дата в формате YYYY-MM-DD",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -477,7 +556,13 @@
         "description": "Возвращает сводку за неделю с понедельника по воскресенье, в которую входит date. Без date используется текущая неделя.",
         "parameters": [
           {
-            "$ref": "#/components/parameters/DateQuery"
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "description": "Дата в формате YYYY-MM-DD",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -494,27 +579,6 @@
         "type": "http",
         "scheme": "bearer",
         "description": "Секретный API-токен Workazy"
-      }
-    },
-    "parameters": {
-      "IdPath": {
-        "name": "id",
-        "in": "path",
-        "required": true,
-        "description": "Идентификатор объекта. Если идентификатор неизвестен, сначала вызови соответствующую list-операцию.",
-        "schema": {
-          "type": "string"
-        }
-      },
-      "DateQuery": {
-        "name": "date",
-        "in": "query",
-        "required": false,
-        "description": "Дата в формате YYYY-MM-DD",
-        "schema": {
-          "type": "string",
-          "format": "date"
-        }
       }
     },
     "responses": {
