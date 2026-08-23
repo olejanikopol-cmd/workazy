@@ -16,6 +16,18 @@ const tabs: { id: AppTab; label: string; icon: string }[] = [
   { id: "ideas", label: "Идеи", icon: "spark" },
 ];
 
+const PLAN_DATE_STORAGE_KEY = "workazy-selected-plan-date-v1";
+
+function loadStoredPlanDate() {
+  if (typeof window === "undefined") return null;
+  try {
+    const value = window.localStorage.getItem(PLAN_DATE_STORAGE_KEY);
+    return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export function Icon({ name, size = 22 }: { name: string; size?: number }) {
   const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
   if (name === "check") return <svg {...common}><path d="M5 12.5 9.2 17 19 7" /></svg>;
@@ -62,6 +74,7 @@ export default function PlannerApp() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editorText, setEditorText] = useState("1. ");
+  const [quickTaskTitle, setQuickTaskTitle] = useState("");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [menuPlacement, setMenuPlacement] = useState<"up" | "down">("down");
   const [apiConfig, setApiConfig] = useState<PlannerApiConfig>(defaultApiConfig);
@@ -80,6 +93,8 @@ export default function PlannerApp() {
       if (Array.isArray(saved.events)) setEvents(saved.events as CalendarEvent[]);
       if (Array.isArray(saved.ideas)) setIdeas(saved.ideas as Idea[]);
     }
+    const storedPlanDate = loadStoredPlanDate();
+    if (storedPlanDate) setSelectedDate(storedPlanDate);
     setHydrated(true);
 
     const config = loadApiConfig();
@@ -107,6 +122,15 @@ export default function PlannerApp() {
   useEffect(() => {
     if (hydrated) savePlannerState({ tasks, goals, entries, events, ideas });
   }, [tasks, goals, entries, events, ideas, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      window.localStorage.setItem(PLAN_DATE_STORAGE_KEY, selectedDate);
+    } catch {
+      // localStorage может быть недоступен в приватном режиме.
+    }
+  }, [selectedDate, hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -246,6 +270,22 @@ export default function PlannerApp() {
     setEditorOpen(false);
   }
 
+  function addQuickTask(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const title = quickTaskTitle.trim();
+    if (!title) return;
+    setTasks((current) => [...current, { id: uid("task"), title, completed: false, date: selectedDate }]);
+    setQuickTaskTitle("");
+  }
+
+  function resetPlan() {
+    if (!dayTasks.length) return;
+    const label = displayDate(selectedDate).toLowerCase();
+    if (!window.confirm(`Сбросить план на ${label}? Все пункты этого дня будут удалены.`)) return;
+    setOpenMenuId(null);
+    setTasks((current) => current.filter((task) => task.date !== selectedDate));
+  }
+
   return (
     <main className="app-shell">
       <div className="ambient ambient-one" />
@@ -278,6 +318,12 @@ export default function PlannerApp() {
           </section>
 
           <div className="section-heading"><h2>План</h2><span>{dayTasks.length} пунктов</span></div>
+          <div className="plan-tools">
+            <form className="quick-task-form" onSubmit={addQuickTask}>
+              <input value={quickTaskTitle} onChange={(event) => setQuickTaskTitle(event.target.value)} placeholder={`Добавить пункт на ${displayDate(selectedDate).toLowerCase()}`} aria-label="Добавить пункт в план" />
+              <button type="submit" disabled={!quickTaskTitle.trim()} aria-label="Добавить пункт"><Icon name="plus" size={18} /></button>
+            </form>
+          </div>
 
           <div className="task-list">
             {dayTasks.map((task, index) => (
@@ -300,6 +346,7 @@ export default function PlannerApp() {
             {!dayTasks.length && <div className="empty-card"><Icon name="spark" size={28} /><h3>День пока свободен</h3><p>Добавь план одним быстрым списком.</p></div>}
           </div>
 
+          <button className="reset-plan-button" type="button" onClick={resetPlan} disabled={!dayTasks.length}>Сбросить план</button>
           <button className="primary-action" onClick={() => setEditorOpen(true)}><span><Icon name="plus" size={20} /></span>Составить план</button>
         </section>}
 

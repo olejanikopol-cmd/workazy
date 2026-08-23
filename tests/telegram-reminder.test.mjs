@@ -13,7 +13,10 @@ test("telegram digest route deduplicates by stored hash and logs every outcome",
   assert.match(source, /sentAt: nowIso\(\)/, "успешная отправка получает sentAt");
   assert.match(source, /status: "error"/, "ошибка Telegram логируется");
   assert.match(source, /sendTelegramMessage\(/, "отправка идёт через общий клиент");
-  assert.match(source, /lastPayload\.hash === hash/, "дедупликация по хэшу последней отправки");
+  assert.match(source, /currentHourBucket\(/, "каждый час получает отдельный lock bucket");
+  assert.match(source, /onConflictDoNothing/, "повторный запуск в том же часе не дублирует отправку");
+  assert.match(source, /currentDigestHour\(/, "в сообщение попадает ровный часовой слот");
+  assert.match(source, /buildMessage\(dayTasks, dayEvents, digestHour\)/, "Telegram-текст использует округлённое время");
 });
 
 test("digest hash changes when visible Telegram content changes", async () => {
@@ -70,7 +73,11 @@ test("reminder schema supports digest entries", async () => {
 
 test("hourly GitHub workflow calls the protected tick endpoint", async () => {
   const source = await readFile(new URL(".github/workflows/hourly-reminder.yml", root), "utf8");
+  const proxy = await readFile(new URL("app/api/telegram/hourly/route.ts", root), "utf8");
   assert.match(source, /cron: "0 \* \* \* \*"/);
-  assert.match(source, /secrets\.WORKAZY_API_TOKEN/);
-  assert.match(source, /api\/v1\/reminders\/tick/);
+  assert.match(source, /id-token: write/);
+  assert.match(source, /core\.getIDToken\('workazy-hourly'\)/);
+  assert.match(source, /api\/telegram\/hourly/);
+  assert.match(proxy, /verifyGithubActionsRequest/);
+  assert.match(proxy, /api\/v1\/reminders\/tick/);
 });

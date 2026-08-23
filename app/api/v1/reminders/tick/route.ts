@@ -2,12 +2,12 @@ export const dynamic = "force-dynamic";
 
 // Почасовой дайджест для Telegram-бота:
 // невыполненные задачи на сегодня + события на сегодня + прогресс дня.
-// Анти-спам: сообщение отправляется только если картина дня изменилась
-// с последней отправки (хэш состава хранится в reminder_logs, payload).
+// Анти-дублирование: сообщение отправляется ровно один раз за час,
+// даже если внешний планировщик повторит запрос.
 // Внешний планировщик вызывает раз в час: POST /api/v1/reminders/tick.
-import { and, asc, desc, eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { calendarEvents, reminderLogs, tasks } from "@/db/schema";
+import { calendarEvents, reminderLogs, settings, tasks } from "@/db/schema";
 import { ApiError, jsonOk, nowIso, readQueryBool, todayDate, withApi } from "@/lib/api";
 import { sendTelegramMessage } from "@/lib/telegram";
 
@@ -30,12 +30,31 @@ function digestHash(dayTasks: DigestTask[], events: DigestEvent[]): string {
   return hash.toString(36);
 }
 
-function currentTime(): string {
+function currentDigestHour(now: Date): string {
   const timeZone = process.env.WORKAZY_TIME_ZONE ?? "Europe/Kyiv";
   try {
-    return new Intl.DateTimeFormat("en", { timeZone, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
+    const hour = new Intl.DateTimeFormat("en", { timeZone, hour: "2-digit", hour12: false }).format(now);
+    return `${hour === "24" ? "00" : hour}:00`;
   } catch {
-    return new Date().toTimeString().slice(0, 5);
+    return `${String(now.getHours()).padStart(2, "0")}:00`;
+  }
+}
+
+function currentHourBucket(now: Date): string {
+  const timeZone = process.env.WORKAZY_TIME_ZONE ?? "Europe/Kyiv";
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(now);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}T${values.hour}`;
+  } catch {
+    return now.toISOString().slice(0, 13);
   }
 }
 
@@ -45,10 +64,10 @@ function formatList(items: string[]): string[] {
   return lines;
 }
 
-function buildMessage(dayTasks: DigestTask[], dayEvents: DigestEvent[]): string {
+function buildMessage(dayTasks: DigestTask[], dayEvents: DigestEvent[], digestHour: string): string {
   const completedCount = dayTasks.filter((task) => task.completed).length;
   const pendingTasks = dayTasks.filter((task) => !task.completed);
-  const lines = [`🌙 Workazy · ${currentTime()}`, `Выполнено ${completedCount} из ${dayTasks.length}`];
+  const lines = [`🌙 Workazy · ${digestHour}`, `Выполнено ${completedCount} из ${dayTasks.length}`];
 
   if (!dayTasks.length && !dayEvents.length) {
     lines.push("", "На сегодня задач и событий нет.");
@@ -67,21 +86,14 @@ function buildMessage(dayTasks: DigestTask[], dayEvents: DigestEvent[]): string 
   return lines.join("\n");
 }
 
-function parseDigestPayload(raw: string | null): { hash?: string; date?: string } | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object") return null;
-    return parsed as { hash?: string; date?: string };
-  } catch {
-    return null;
-  }
-}
-
 export const POST = withApi(async (request) => {
   const url = new URL(request.url);
   const force = readQueryBool(url.searchParams.get("force"), "force") ?? false;
-  const date = todayDate();
+  const now = new Date();
+  const date = todayDate(now);
+  const hourBucket = currentHourBucket(now);
+  const digestHour = currentDigestHour(now);
+  const lockKey = `telegram-hour:${hourBucket}`;
   const db = await getDb();
 
   const [dayTasks, dayEvents] = await Promise.all([
@@ -91,31 +103,33 @@ export const POST = withApi(async (request) => {
 
   const pendingTasks = dayTasks.filter((task) => !task.completed);
   const hash = digestHash(dayTasks, dayEvents);
-  const digestLog = { entityType: DIGEST_ENTITY, entityId: DIGEST_ID, dueAt: nowIso(), payload: JSON.stringify({ hash, date }) } as const;
+  const digestLog = { entityType: DIGEST_ENTITY, entityId: `${DIGEST_ID}:${hourBucket}`, dueAt: nowIso(), payload: JSON.stringify({ hash, date, hourBucket, digestHour }) } as const;
 
   if (!force) {
-    const lastRows = await db
-      .select()
-      .from(reminderLogs)
-      .where(and(eq(reminderLogs.entityType, DIGEST_ENTITY), eq(reminderLogs.entityId, DIGEST_ID), eq(reminderLogs.status, "sent")))
-      .orderBy(desc(reminderLogs.dueAt))
-      .limit(1);
-    const lastPayload = parseDigestPayload(lastRows[0]?.payload ?? null);
-    if (lastPayload && lastPayload.hash === hash && lastPayload.date === date) {
+    const reserved = await db
+      .insert(settings)
+      .values({ key: lockKey, value: "sending", updatedAt: nowIso() })
+      .onConflictDoNothing()
+      .returning({ key: settings.key });
+    if (!reserved.length) {
       await db.insert(reminderLogs).values({ ...digestLog, status: "skipped" });
-      return jsonOk({ sent: false, reason: "no_changes" });
+      return jsonOk({ sent: false, reason: "already_sent_this_hour" });
     }
   }
 
-  const text = buildMessage(dayTasks, dayEvents);
+  const text = buildMessage(dayTasks, dayEvents, digestHour);
   try {
     await sendTelegramMessage(text);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await db.insert(reminderLogs).values({ ...digestLog, status: "error", payload: JSON.stringify({ hash, date, error: message }) });
+    await db.insert(reminderLogs).values({ ...digestLog, status: "error", payload: JSON.stringify({ hash, date, hourBucket, digestHour, error: message }) });
+    if (!force) await db.delete(settings).where(eq(settings.key, lockKey));
     throw new ApiError(502, "Не удалось отправить сообщение в Telegram");
   }
 
+  if (!force) {
+    await db.update(settings).set({ value: "sent", updatedAt: nowIso() }).where(eq(settings.key, lockKey));
+  }
   await db.insert(reminderLogs).values({ ...digestLog, status: "sent", sentAt: nowIso() });
-  return jsonOk({ sent: true, date, pending: pendingTasks.length, events: dayEvents.length });
+  return jsonOk({ sent: true, date, hour: digestHour, pending: pendingTasks.length, events: dayEvents.length });
 });

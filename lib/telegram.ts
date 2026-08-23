@@ -1,6 +1,5 @@
-// Клиент Telegram Bot API: только отправка сообщений, без сторонних библиотек
-// и без OpenAI API. Секреты TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID берутся
-// из окружения воркера (как WORKAZY_API_TOKEN в lib/api.ts).
+// Клиент Telegram Bot API: только отправка сообщений, без сторонних библиотек.
+// Секреты читаются только на сервере и никогда не попадают в клиентский код.
 
 type TelegramConfig = { token: string; chatId: string };
 

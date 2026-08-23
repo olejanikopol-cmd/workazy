@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties, Dispatch, FormEvent, SetStateAction } from "react";
 import type { CalendarEvent, Goal, GoalPeriod, Idea, IdeaCategory, IdeaStatus, JournalEntry, PlanTask } from "@/lib/types";
 import type { PlannerApiConfig } from "@/lib/planner-api";
@@ -75,6 +75,7 @@ export function JournalScreen({ entries, setEntries }: { entries: JournalEntry[]
   const [tags, setTags] = useState("");
   const [query, setQuery] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
+  const [readingEntry, setReadingEntry] = useState<JournalEntry | null>(null);
   const moods = ["Спокойно", "Энергично", "Тяжело", "Радостно"];
   const filtered = entries.filter((entry) => `${entry.title ?? ""} ${entry.body} ${entry.tags.join(" ")}`.toLowerCase().includes(query.toLowerCase()));
 
@@ -87,7 +88,14 @@ export function JournalScreen({ entries, setEntries }: { entries: JournalEntry[]
   function removeEntry(entry: JournalEntry) {
     const label = entry.title?.trim() || displayDate(entry.date);
     if (!window.confirm(`Удалить запись «${label}»?`)) return;
+    if (readingEntry?.id === entry.id) setReadingEntry(null);
     setEntries((current) => current.filter((item) => item.id !== entry.id));
+  }
+
+  function handleEntryKeyDown(event: React.KeyboardEvent<HTMLElement>, entry: JournalEntry) {
+    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    setReadingEntry(entry);
   }
 
   return <section className="screen secondary-screen journal-screen" aria-labelledby="journal-title">
@@ -104,8 +112,8 @@ export function JournalScreen({ entries, setEntries }: { entries: JournalEntry[]
       <button className="primary-action journal-save" onClick={saveEntry} disabled={!body.trim()}><span><Icon name="check" size={18} /></span>Сохранить запись</button>
     </div> : <div className="journal-history">
       <label className="search-box"><Icon name="search" size={18} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Найти в записях" /></label>
-      <div className="entry-list">{filtered.map((entry) => <article className="entry-card" key={entry.id}>
-        <div className="entry-meta"><span>{displayDate(entry.date)}</span><div className="entry-meta-actions">{entry.mood && <span className="mood-badge">{entry.mood}</span>}<button className="entry-delete" onClick={() => removeEntry(entry)} aria-label={`Удалить запись «${entry.title?.trim() || displayDate(entry.date)}»`}><Icon name="close" size={16} /></button></div></div>
+      <div className="entry-list">{filtered.map((entry) => <article className="entry-card" key={entry.id} role="button" tabIndex={0} onClick={() => setReadingEntry(entry)} onKeyDown={(event) => handleEntryKeyDown(event, entry)}>
+        <div className="entry-meta"><span>{displayDate(entry.date)}</span><div className="entry-meta-actions">{entry.mood && <span className="mood-badge">{entry.mood}</span>}<button className="entry-delete" onClick={(event) => { event.stopPropagation(); removeEntry(entry); }} aria-label={`Удалить запись «${entry.title?.trim() || displayDate(entry.date)}»`}><Icon name="close" size={16} /></button></div></div>
         {entry.title && <h2>{entry.title}</h2>}<p>{entry.body}</p>
         {!!entry.tags.length && <div className="entry-tags">{entry.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
       </article>)}</div>
@@ -117,6 +125,16 @@ export function JournalScreen({ entries, setEntries }: { entries: JournalEntry[]
       <div className="export-options"><label><input type="radio" name="range" defaultChecked /> Последняя запись</label><label><input type="radio" name="range" /> Эта неделя</label><label><input type="radio" name="range" /> Этот месяц</label><label><input type="radio" name="range" /> Весь дневник</label></div>
       <button className="sheet-submit" onClick={() => window.print()}><Icon name="download" size={18} />Открыть печатную версию</button>
     </section></div>}
+
+    {readingEntry && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setReadingEntry(null)}>
+      <section className="compact-sheet entry-reader" role="dialog" aria-modal="true" aria-labelledby="entry-reader-title">
+        <div className="modal-handle" />
+        <div className="editor-head"><div><span>{displayDate(readingEntry.date)}</span><h2 id="entry-reader-title">{readingEntry.title?.trim() || "Запись дневника"}</h2></div><button className="icon-button" onClick={() => setReadingEntry(null)} aria-label="Закрыть запись"><Icon name="close" /></button></div>
+        {readingEntry.mood && <span className="reader-mood">{readingEntry.mood}</span>}
+        <div className="entry-reader-body">{readingEntry.body}</div>
+        {!!readingEntry.tags.length && <div className="entry-tags reader-tags">{readingEntry.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
+      </section>
+    </div>}
   </section>;
 }
 
@@ -274,12 +292,41 @@ export function SettingsSheet({ apiConfig, onSaveApiConfig, onClose }: {
   onClose: () => void;
 }) {
   const [pushEnabled, setPushEnabled] = useState(false);
-  const [telegramRequested, setTelegramRequested] = useState(false);
   const [baseUrl, setBaseUrl] = useState(apiConfig.baseUrl);
   const [token, setToken] = useState(apiConfig.token);
   const [syncEnabled, setSyncEnabled] = useState(apiConfig.enabled);
   const [syncStatus, setSyncStatus] = useState("");
   const [syncSaving, setSyncSaving] = useState(false);
+  const [telegramStatus, setTelegramStatus] = useState<{
+    configured: boolean;
+    lastSentAt: string | null;
+  } | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
+
+  const refreshTelegramStatus = useCallback(async () => {
+    setStatusLoading(true);
+    try {
+      const response = await fetch("/api/telegram/status", { cache: "no-store" });
+      if (!response.ok) throw new Error("Status unavailable");
+      setTelegramStatus(await response.json());
+    } catch {
+      setTelegramStatus({ configured: false, lastSentAt: null });
+    } finally {
+      setStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshTelegramStatus();
+  }, [refreshTelegramStatus]);
+
+  const telegramCopy = statusLoading
+    ? "Проверяем подключение…"
+    : telegramStatus?.configured
+      ? telegramStatus.lastSentAt
+        ? `Работает · последнее ${new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date(telegramStatus.lastSentAt))}`
+        : "Подключено · каждый час"
+      : "Требуется настройка бота";
 
   async function saveServerConfig() {
     setSyncSaving(true);
@@ -296,9 +343,9 @@ export function SettingsSheet({ apiConfig, onSaveApiConfig, onClose }: {
 
   return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><section className="compact-sheet settings-sheet">
     <div className="modal-handle" /><div className="editor-head"><div><span>Подключения</span><h2>Напоминания</h2></div><button className="icon-button" onClick={onClose} aria-label="Закрыть"><Icon name="close" /></button></div>
-    <p className="sheet-description">Каналы уже предусмотрены в интерфейсе. Реальные подключения работают через Workazy API.</p>
+    <p className="sheet-description">Telegram напоминает о следующем шаге каждый час — даже когда планер закрыт.</p>
     <div className="settings-list">
-      <article><div className="setting-icon telegram"><Icon name="telegram" /></div><div><h3>Telegram</h3><p>{telegramRequested ? "Готово к подключению" : "Не подключено"}</p></div><button onClick={() => setTelegramRequested(true)}>{telegramRequested ? "Ожидает" : "Подключить"}</button></article>
+      <article><div className="setting-icon telegram"><Icon name="telegram" /></div><div><h3>Telegram</h3><p>{telegramCopy}</p></div><button onClick={() => void refreshTelegramStatus()} disabled={statusLoading}>{statusLoading ? "…" : "Обновить"}</button></article>
       <article><div className="setting-icon"><Icon name="bell" /></div><div><h3>Browser Push</h3><p>{pushEnabled ? "Включены" : "Выключены"}</p></div><label className="toggle"><input type="checkbox" checked={pushEnabled} onChange={(e) => setPushEnabled(e.target.checked)} /><span /></label></article>
       <article className="muted-setting"><div className="setting-icon">SMS</div><div><h3>SMS</h3><p>Будет доступно позже</p></div><span className="soon">Скоро</span></article>
     </div>
@@ -315,6 +362,6 @@ export function SettingsSheet({ apiConfig, onSaveApiConfig, onClose }: {
         {syncStatus && <span>{syncStatus}</span>}
       </div>
     </div>
-    <div className="integration-note"><Icon name="spark" size={18} /><p>ChatGPT может читать и изменять планы через Custom GPT Actions и Telegram-бота — без отдельного AI внутри приложения.</p></div>
+    <div className="integration-note"><Icon name="spark" size={18} /><p>Каждый час приходит сводка по плану. Повторный запуск в тот же час не создаёт дубль.</p></div>
   </section></div>;
 }
