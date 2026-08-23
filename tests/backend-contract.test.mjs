@@ -34,8 +34,13 @@ test("state replacement uses an atomic D1 batch and derives task order from the 
 
 test("deploy packaging includes the generated migration directory", async () => {
   const plugin = await readFile(new URL("build/sites-vite-plugin.ts", root), "utf8");
+  const build = await readFile(new URL("scripts/build-verified.sh", root), "utf8");
+  const verify = await readFile(new URL("scripts/verify-sites-artifact.mjs", root), "utf8");
   const migration = await readFile(new URL("db/migrations/0000_wandering_scarlet_spider.sql", root), "utf8");
   assert.match(plugin, /resolve\(root, "db", "migrations"\)/);
+  assert.match(build, /verify-sites-artifact\.mjs/);
+  assert.match(verify, /0001_hesitant_jazinda\.sql/);
+  assert.match(verify, /hosting\.d1 !== "DB" \|\| hosting\.r2 !== "MEDIA"/);
   assert.match(migration, /CREATE TABLE `tasks`/);
   assert.match(migration, /CREATE TABLE `reminder_logs`/);
 });

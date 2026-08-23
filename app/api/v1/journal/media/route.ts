@@ -58,7 +58,7 @@ export const POST = withApi(async (request) => {
   await validateFileHeader(file, "Основной файл");
 
   const audioTrackPart = form.get("audioTrack");
-  let audioTrack: { stream: ReadableStream; mimeType: string; fileName?: string } | null = null;
+  let audioTrack: { stream: ReadableStream; mimeType: string; sizeBytes: number; fileName?: string } | null = null;
   if (audioTrackPart !== null) {
     if (type === "audio") throw new ApiError(400, "Отдельная аудиодорожка доступна только для видео");
     if (!(audioTrackPart instanceof File)) throw new ApiError(400, "Поле «audioTrack» должно быть файлом");
@@ -69,7 +69,7 @@ export const POST = withApi(async (request) => {
     }
     if (audioTrackPart.size > MAX_AUDIO_SIZE_BYTES) throw new ApiError(413, "Аудиодорожка превышает допустимый размер");
     await validateFileHeader(audioTrackPart, "Аудиодорожка");
-    audioTrack = { stream: audioTrackPart.stream(), mimeType: audioTrackPart.type, fileName: audioTrackPart.name };
+    audioTrack = { stream: audioTrackPart.stream(), mimeType: audioTrackPart.type, sizeBytes: audioTrackPart.size, fileName: audioTrackPart.name };
   }
 
   const durationMs = readInt(formInt(form.get("durationMs"), "durationMs"), "durationMs", {
@@ -84,6 +84,7 @@ export const POST = withApi(async (request) => {
     type,
     mimeType: file.type,
     fileStream: file.stream(),
+    sizeBytes: file.size,
     fileName: file.name || undefined,
     audioTrack,
     durationMs,

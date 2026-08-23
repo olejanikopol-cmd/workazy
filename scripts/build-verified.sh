@@ -30,3 +30,5 @@ else
   echo "GNU timeout is unavailable; running vinext build without the watchdog." >&2
   "${vinext}" build
 fi
+
+node "${SITES_PROJECT_ROOT}/scripts/verify-sites-artifact.mjs"

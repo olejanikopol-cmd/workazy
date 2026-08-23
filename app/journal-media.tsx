@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { JournalEntry, JournalMedia } from "@/lib/types";
 import type { PlannerApiConfig } from "@/lib/planner-api";
 import { deleteMediaRemote, fetchMediaPlaybackUrl, requestTranscription, updateMediaTranscriptRemote } from "@/lib/planner-api";
-import { extensionForMime, formatDuration } from "@/lib/media-limits";
+import { extensionForMime, formatDuration, formatFileSize } from "@/lib/media-limits";
 import {
   AUDIO_RECORDER_MIME_CANDIDATES,
   VIDEO_RECORDER_MIME_CANDIDATES,
@@ -319,7 +319,7 @@ export function MediaDraftCard({ draft, onRemove, onRetry }: {
     <div className="draft-media-head">
       <span className="draft-media-title">
         <Icon name={draft.type === "audio" ? "mic" : "video"} size={16} />
-        {draft.type === "audio" ? "Голосовая запись" : "Видеозапись"} · {formatDuration(draft.durationMs)}
+        {draft.type === "audio" ? "Голосовая запись" : "Видеозапись"} · {formatDuration(draft.durationMs)} · {formatFileSize(draft.blob.size)}
       </span>
       <button className="icon-button" onClick={onRemove} aria-label="Убрать запись"><Icon name="close" size={16} /></button>
     </div>

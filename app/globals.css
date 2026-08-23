@@ -354,7 +354,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .draft-list { display: grid; gap: 10px; margin-top: 14px; }
 .draft-media-card, .entry-media-item { padding: 14px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.025); display: grid; gap: 10px; }
 .draft-media-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.draft-media-title { display: inline-flex; align-items: center; gap: 7px; color: #c9cad3; font-size: 12px; font-weight: 600; }
+.draft-media-title { display: inline-flex; align-items: center; flex-wrap: wrap; min-width: 0; gap: 7px; color: #c9cad3; font-size: 12px; font-weight: 600; }
 .media-player { width: 100%; border-radius: 14px; }
 audio.media-player { height: 44px; }
 .media-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }

@@ -10,21 +10,47 @@ async function readSource(relativePath) {
   return readFile(new URL(relativePath, root), "utf8");
 }
 
+async function importPureTypeScript(relativePath) {
+  const source = await readSource(relativePath);
+  const output = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  return import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
+}
+
 test("migration 0001 adds journal_media and makes journal body nullable without losing rows", async () => {
   const files = await readdir(new URL("db/migrations/", root));
   const migrationName = files.find((file) => file.startsWith("0001_") && file.endsWith(".sql"));
   assert.ok(migrationName, "миграция 0001 существует");
   const migration = await readSource(`db/migrations/${migrationName}`);
 
-  assert.match(migration, /CREATE TABLE `journal_media`/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS `journal_media`/);
   assert.match(migration, /`storage_key` text NOT NULL/);
   assert.match(migration, /`transcription_status` text DEFAULT 'pending' NOT NULL/);
-  assert.match(migration, /CREATE INDEX `idx_journal_media_entry` ON `journal_media` \(`journal_entry_id`\)/);
+  assert.match(migration, /CREATE INDEX IF NOT EXISTS `idx_journal_media_entry` ON `journal_media` \(`journal_entry_id`\)/);
   // body становится необязательным через пересоздание таблицы с переносом данных.
   assert.match(migration, /CREATE TABLE `__new_journal_entries`/);
   assert.match(migration, /INSERT INTO `__new_journal_entries`[\s\S]*SELECT[\s\S]*FROM `journal_entries`/);
   assert.match(migration, /ALTER TABLE `__new_journal_entries` RENAME TO `journal_entries`/);
   assert.match(migration, /PRAGMA foreign_keys=ON/);
+});
+
+test("runtime schema repair handles a missing 0001 without losing legacy rows", async () => {
+  const schemaSql = await importPureTypeScript("lib/storage-schema.ts");
+  const database = new DatabaseSync(":memory:");
+  const base = await readSource("db/migrations/0000_wandering_scarlet_spider.sql");
+  database.exec(base.split("--> statement-breakpoint").join("\n"));
+  database.prepare("INSERT INTO journal_entries(id,date,title,body,tags,created_at,updated_at) VALUES(?,?,?,?,?,?,?)")
+    .run("legacy", "2026-08-24", "До миграции", "Текст", "[]", "created", "updated");
+
+  assert.equal(database.prepare("SELECT COUNT(*) count FROM sqlite_master WHERE type='table' AND name='journal_media'").get().count, 0);
+  assert.equal(database.prepare("SELECT \"notnull\" value FROM pragma_table_info('journal_entries') WHERE name='body'").get().value, 1);
+  database.exec([...schemaSql.CREATE_JOURNAL_MEDIA_SQL, ...schemaSql.MAKE_JOURNAL_BODY_NULLABLE_SQL].join(";\n"));
+
+  assert.equal(database.prepare("SELECT COUNT(*) count FROM sqlite_master WHERE type='table' AND name='journal_media'").get().count, 1);
+  assert.equal(database.prepare("SELECT \"notnull\" value FROM pragma_table_info('journal_entries') WHERE name='body'").get().value, 0);
+  assert.equal(database.prepare("SELECT body FROM journal_entries WHERE id='legacy'").get().body, "Текст");
+  database.close();
 });
 
 test("migration 0001 preserves legacy journal rows in SQLite", async () => {
@@ -80,12 +106,23 @@ test("R2 streaming put enforces the size limit and cleans up failed objects", as
   const r2 = await readSource("lib/r2.ts");
   assert.match(r2, /putStreamLimited/);
   assert.match(r2, /seen > options\.maxSizeBytes/);
+  assert.match(r2, /new FixedLengthStream\(options\.expectedSizeBytes\)/);
+  assert.match(r2, /expectedSizeBytes: options\.sizeBytes/);
   assert.match(r2, /controller\.error\(new ApiError\(413/);
   // Любая ошибка записи убирает начатый объект, чтобы не оставлять мусор.
   assert.match(r2, /await deleteObjectQuiet\(bucket, key\)/);
   // cloudflare:workers читается лениво — статический импорт ломал бы сборку.
   assert.match(r2, /await import\("cloudflare:workers"\)/);
   assert.doesNotMatch(r2, /^import .* from "cloudflare:workers"/m);
+});
+
+test("storage health reports a missing R2 binding and media routes require it", async () => {
+  const health = await readSource("lib/storage-health.ts");
+  assert.match(health, /await getMediaBucket\(\)/);
+  assert.match(health, /mediaBinding = false/);
+  assert.match(health, /ready: d1\.databaseBinding[\s\S]*&& mediaBinding/);
+  const session = await readSource("lib/journal-media-upload.ts");
+  assert.match(session, /await ensureMediaStorageReady\(\)/);
 });
 
 test("file route serves signed or bearer requests with HTTP Range support", async () => {
@@ -181,19 +218,65 @@ test("Groq provider talks to api.groq.com directly with whisper-large-v3-turbo",
   assert.doesNotMatch(factory, /OPENAI_API_KEY/);
 });
 
-test("client uploads media with progress and keeps binary payloads out of planner state", async () => {
+test("client uploads main media and audio track as separate retryable chunks", async () => {
   const api = await readSource("lib/planner-api.ts");
-  assert.match(api, /XMLHttpRequest/);
-  assert.match(api, /xhr\.upload\.addEventListener\("progress"/);
-  assert.match(api, /input\.signal\?\.addEventListener\("abort", abortUpload/);
-  assert.match(api, /form\.append\("file", input\.file, input\.fileName\)/);
-  assert.match(api, /\/api\/v1\/journal\/media/);
+  assert.doesNotMatch(api, /new FormData\(\)|XMLHttpRequest/);
+  assert.match(api, /uploadBlobParts\(config, session, "main", input\.file/);
+  assert.match(api, /uploadBlobParts\(config, session, "track", input\.audioTrack/);
+  assert.match(api, /retryMediaOperation/);
+  assert.match(api, /abortMediaUpload\(config, session\.id\)/);
+  assert.match(api, /audioTrackBytes: input\.audioTrack\?\.size/);
   // Ссылка на байты запрашивается отдельно и живёт ограниченное время.
   assert.match(api, /file-url/);
 
   const screen = await readSource("app/secondary-screens.tsx");
   // В запись попадают только серверные метаданные, а не блобы черновиков.
   assert.match(screen, /drafts\.map\(\(draft\) => draft\.server\)/);
+});
+
+test("large files are split below the single-request limit and retry only the failed chunk", async () => {
+  const upload = await importPureTypeScript("lib/media-upload.ts");
+  const total = upload.MEDIA_UPLOAD_CHUNK_SIZE_BYTES * 4 + 123;
+  assert.equal(upload.mediaChunkCount(total), 5);
+  for (let part = 0; part < upload.mediaChunkCount(total); part += 1) {
+    assert.ok(upload.mediaChunkBounds(total, part).size <= 512 * 1024);
+  }
+
+  let calls = 0;
+  const result = await upload.retryMediaOperation(async () => {
+    calls += 1;
+    if (calls < 3) throw new Error("temporary");
+    return "ok";
+  }, { attempts: 3, baseDelayMs: 0 });
+  assert.equal(result, "ok");
+  assert.equal(calls, 3);
+});
+
+test("chunk streams assemble in order without buffering the full file", async () => {
+  const upload = await importPureTypeScript("lib/media-upload.ts");
+  const parts = [new Uint8Array([1, 2]), new Uint8Array([3]), new Uint8Array([4, 5])];
+  const stream = upload.concatenateMediaStreams(parts.length, async (part) => new ReadableStream({
+    start(controller) {
+      controller.enqueue(parts[part]);
+      controller.close();
+    },
+  }));
+  assert.deepEqual(new Uint8Array(await new Response(stream).arrayBuffer()), new Uint8Array([1, 2, 3, 4, 5]));
+});
+
+test("abort cleans temporary R2 objects and metadata is persisted only after assembly", async () => {
+  const service = await readSource("lib/journal-media-upload.ts");
+  const abortBlock = service.slice(service.indexOf("export async function abortJournalMediaUpload"));
+  assert.match(abortBlock, /deleteR2Objects\(allTemporaryKeys\(manifest\)\)/);
+
+  const completeBlock = service.slice(
+    service.indexOf("export async function completeJournalMediaUpload"),
+    service.indexOf("export async function abortJournalMediaUpload"),
+  );
+  const assembly = completeBlock.indexOf("putConcatenatedR2Objects");
+  const metadata = completeBlock.indexOf("persistUploadedJournalMedia");
+  assert.ok(assembly !== -1 && metadata !== -1 && assembly < metadata);
+  assert.match(completeBlock, /Временные чанки остаются до abort\/retry/);
 });
 
 test("backup builder never receives tokens or secrets", async () => {

@@ -52,6 +52,12 @@ interface R2Bucket {
   delete(keys: string | string[]): Promise<void>;
 }
 
+// Cloudflare Workers stream с известной длиной. R2 требует его для потоков,
+// которые не являются исходным request/response body.
+declare class FixedLengthStream extends TransformStream<Uint8Array, Uint8Array> {
+  constructor(expectedLength: number | bigint);
+}
+
 declare module "cloudflare:workers" {
   export const env: {
     DB?: D1Database;

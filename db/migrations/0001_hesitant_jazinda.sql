@@ -1,4 +1,4 @@
-CREATE TABLE `journal_media` (
+CREATE TABLE IF NOT EXISTS `journal_media` (
 	`id` text PRIMARY KEY NOT NULL,
 	`journal_entry_id` text NOT NULL,
 	`type` text NOT NULL,
@@ -19,8 +19,9 @@ CREATE TABLE `journal_media` (
 	`updated_at` text NOT NULL
 );
 --> statement-breakpoint
-CREATE INDEX `idx_journal_media_entry` ON `journal_media` (`journal_entry_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `idx_journal_media_entry` ON `journal_media` (`journal_entry_id`);--> statement-breakpoint
 PRAGMA foreign_keys=OFF;--> statement-breakpoint
+DROP TABLE IF EXISTS `__new_journal_entries`;--> statement-breakpoint
 CREATE TABLE `__new_journal_entries` (
 	`id` text PRIMARY KEY NOT NULL,
 	`date` text NOT NULL,
@@ -36,4 +37,4 @@ INSERT INTO `__new_journal_entries`("id", "date", "title", "body", "mood", "tags
 DROP TABLE `journal_entries`;--> statement-breakpoint
 ALTER TABLE `__new_journal_entries` RENAME TO `journal_entries`;--> statement-breakpoint
 PRAGMA foreign_keys=ON;--> statement-breakpoint
-CREATE INDEX `idx_journal_entries_date` ON `journal_entries` (`date`);
+CREATE INDEX IF NOT EXISTS `idx_journal_entries_date` ON `journal_entries` (`date`);

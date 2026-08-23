@@ -2,6 +2,7 @@
 // Модуль `cloudflare:workers` импортируется лениво — та же конвенция,
 // что и в db/index.ts: статический импорт ломал бы сборку в Node.
 import { ApiError } from "./api";
+import { concatenateMediaStreams } from "./media-upload";
 
 export const MEDIA_KEY_PREFIX = "journal-media/";
 
@@ -47,42 +48,59 @@ export async function putStreamLimited(
   stream: ReadableStream,
   options: {
     maxSizeBytes: number;
+    expectedSizeBytes?: number;
     contentType: string;
     customMetadata?: Record<string, string>;
   },
 ): Promise<{ sizeBytes: number }> {
+  if (options.expectedSizeBytes !== undefined && options.expectedSizeBytes > options.maxSizeBytes) {
+    throw new ApiError(413, "Файл превышает допустимый размер");
+  }
   let seen = 0;
   let exceeded = false;
+  const reader = stream.getReader();
 
   const boundedStream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const reader = stream.getReader();
+    async pull(controller) {
       try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          seen += value.byteLength;
-          if (seen > options.maxSizeBytes) {
-            exceeded = true;
-            controller.error(new ApiError(413, "Файл превышает допустимый размер"));
-            return;
-          }
-          controller.enqueue(value);
+        const { done, value } = await reader.read();
+        if (done) {
+          reader.releaseLock();
+          controller.close();
+          return;
         }
-        controller.close();
+        seen += value.byteLength;
+        if (seen > options.maxSizeBytes) {
+          exceeded = true;
+          await reader.cancel("size-limit");
+          controller.error(new ApiError(413, "Файл превышает допустимый размер"));
+          return;
+        }
+        controller.enqueue(value);
       } catch (error) {
         controller.error(error);
-      } finally {
-        reader.releaseLock();
       }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason);
     },
   });
 
   try {
-    await bucket.put(key, boundedStream, {
+    let uploadStream: ReadableStream<Uint8Array> = boundedStream;
+    let pipePromise: Promise<void> | null = null;
+    if (options.expectedSizeBytes !== undefined && typeof FixedLengthStream !== "undefined") {
+      const fixed = new FixedLengthStream(options.expectedSizeBytes);
+      pipePromise = boundedStream.pipeTo(fixed.writable);
+      uploadStream = fixed.readable;
+    }
+    const putPromise = bucket.put(key, uploadStream, {
       httpMetadata: { contentType: options.contentType },
       customMetadata: options.customMetadata,
     });
+    const settled = await Promise.allSettled(pipePromise ? [putPromise, pipePromise] : [putPromise]);
+    const failed = settled.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
   } catch (error) {
     // Начатый объект удаляем всегда: и при обрыве, и при ошибке сети.
     await deleteObjectQuiet(bucket, key);
@@ -93,6 +111,10 @@ export async function putStreamLimited(
   if (seen === 0) {
     await deleteObjectQuiet(bucket, key);
     throw new ApiError(400, "Файл пустой");
+  }
+  if (options.expectedSizeBytes !== undefined && seen !== options.expectedSizeBytes) {
+    await deleteObjectQuiet(bucket, key);
+    throw new ApiError(400, "Размер файла не совпадает с заявленным");
   }
 
   return { sizeBytes: seen };
@@ -108,4 +130,31 @@ export async function readR2ObjectBytes(bucket: R2Bucket, key: string): Promise<
   }
   const buffer = await new Response(object.body).arrayBuffer();
   return new Uint8Array(buffer);
+}
+
+export async function putConcatenatedR2Objects(
+  bucket: R2Bucket,
+  key: string,
+  chunkKeys: string[],
+  options: {
+    sizeBytes: number;
+    contentType: string;
+    customMetadata?: Record<string, string>;
+  },
+): Promise<void> {
+  const stream = concatenateMediaStreams(chunkKeys.length, async (part) => {
+    const object = await bucket.get(chunkKeys[part]);
+    if (!object) throw new ApiError(409, `Не найден чанк ${part}`);
+    return object.body as ReadableStream<Uint8Array>;
+  });
+  const result = await putStreamLimited(bucket, key, stream, {
+    maxSizeBytes: options.sizeBytes,
+    expectedSizeBytes: options.sizeBytes,
+    contentType: options.contentType,
+    customMetadata: options.customMetadata,
+  });
+  if (result.sizeBytes !== options.sizeBytes) {
+    await deleteObjectQuiet(bucket, key);
+    throw new ApiError(409, "Размер собранного файла не совпадает с заявленным");
+  }
 }

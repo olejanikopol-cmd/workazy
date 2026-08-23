@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, Dispatch, FormEvent, SetStateAction } from "react";
 import type { CalendarEvent, Goal, GoalPeriod, Idea, IdeaCategory, IdeaStatus, JournalEntry, JournalMedia, PlanTask } from "@/lib/types";
 import type { PlannerApiConfig } from "@/lib/planner-api";
-import { createJournalEntryRemote, deleteJournalEntryRemote, deleteMediaRemote, fetchMediaBytes, fetchMediaPlaybackUrl, requestTranscription, updateJournalEntryRemote, uploadJournalMediaFile } from "@/lib/planner-api";
+import { createJournalEntryRemote, deleteJournalEntryRemote, deleteMediaRemote, fetchMediaBytes, fetchMediaPlaybackUrl, requestTranscription, updateJournalEntryRemote, uploadJournalMediaFile, validateMediaUploadSizes } from "@/lib/planner-api";
 import { todayIso } from "@/lib/planner-data";
 import { recorderIsSupported } from "@/lib/media-recorder";
 import { createJournalBackupZip, downloadBlob, entryToMarkdown, mediaFileName, type BackupProgress } from "@/lib/journal-export";
@@ -137,6 +137,19 @@ export function JournalScreen({ entries, setEntries, apiConfig }: { entries: Jou
   async function uploadDraft(key: string) {
     const draft = draftsRef.current.find((item) => item.key === key);
     if (!draft || draft.mediaId || !syncEnabled) return;
+
+    try {
+      validateMediaUploadSizes({
+        journalEntryId: draftEntryIdRef.current ?? "pending",
+        type: draft.type,
+        file: draft.blob,
+        fileName: draftFileName(draft),
+        audioTrack: draft.audioTrack,
+      });
+    } catch (error) {
+      updateDraft(key, { status: { phase: "error", message: error instanceof Error ? error.message : "Файл слишком большой" } });
+      return;
+    }
 
     let entryId = draftEntryIdRef.current;
     try {

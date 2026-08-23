@@ -17,8 +17,8 @@ export function jsonOk(data: unknown, status = 200): Response {
   return Response.json({ ok: true, data }, { status });
 }
 
-export function jsonError(status: number, error: string): Response {
-  return Response.json({ ok: false, error }, { status });
+export function jsonError(status: number, error: string, requestId?: string): Response {
+  return Response.json({ ok: false, error, ...(requestId ? { requestId } : {}) }, { status });
 }
 
 // ---------- Авторизация ----------
@@ -235,9 +235,28 @@ export function withApi<Params extends RouteParams = RouteParams>(
     try {
       return await handler(request, context);
     } catch (error) {
-      if (error instanceof ApiError) return jsonError(error.status, error.message);
-      console.error(error);
-      return jsonError(500, "Внутренняя ошибка сервера");
+      const requestId = crypto.randomUUID();
+      const url = new URL(request.url);
+      if (error instanceof ApiError) {
+        if (error.status >= 500) {
+          console.error("Workazy API error", {
+            requestId,
+            method: request.method,
+            path: url.pathname,
+            status: error.status,
+            cause: error.message,
+          });
+        }
+        return jsonError(error.status, error.message, error.status >= 500 ? requestId : undefined);
+      }
+      console.error("Workazy API unhandled error", {
+        requestId,
+        method: request.method,
+        path: url.pathname,
+        cause: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      return jsonError(500, "Внутренняя ошибка сервера. Сообщите код ошибки поддержке.", requestId);
     }
   };
 }

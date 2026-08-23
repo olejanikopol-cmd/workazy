@@ -15,6 +15,7 @@ import {
 } from "./media-limits";
 import { MEDIA_KEY_PREFIX, deleteR2Objects, getMediaBucket, putStreamLimited, readR2ObjectBytes } from "./r2";
 import { getTranscriptionProvider } from "./transcription/provider";
+import { ensureMediaStorageReady } from "./storage-health";
 
 export function mediaToJson(row: typeof journalMedia.$inferSelect): JournalMedia {
   return {
@@ -38,12 +39,14 @@ export function mediaToJson(row: typeof journalMedia.$inferSelect): JournalMedia
 }
 
 export async function listMediaByEntry(database: Db, journalEntryId: string): Promise<JournalMedia[]> {
+  await ensureMediaStorageReady({ requireMedia: false });
   const rows = await database.select().from(journalMedia).where(eq(journalMedia.journalEntryId, journalEntryId));
   return rows.map(mediaToJson);
 }
 
 // Группировка метаданных по записям — для присоединения к состоянию.
 export async function listAllMedia(database: Db): Promise<Map<string, JournalMedia[]>> {
+  await ensureMediaStorageReady({ requireMedia: false });
   const rows = await database.select().from(journalMedia);
   const byEntry = new Map<string, JournalMedia[]>();
   for (const row of rows) {
@@ -72,10 +75,18 @@ export async function requireEntryExists(database: Db, journalEntryId: string): 
 }
 
 export async function getMediaRow(mediaId: string): Promise<typeof journalMedia.$inferSelect> {
+  await ensureMediaStorageReady({ requireMedia: false });
   const database = await getDb();
   const rows = await database.select().from(journalMedia).where(eq(journalMedia.id, mediaId)).limit(1);
   if (!rows.length) throw new ApiError(404, "Файл медиа не найден");
   return rows[0];
+}
+
+export async function findMediaRow(mediaId: string): Promise<typeof journalMedia.$inferSelect | null> {
+  await ensureMediaStorageReady({ requireMedia: false });
+  const database = await getDb();
+  const rows = await database.select().from(journalMedia).where(eq(journalMedia.id, mediaId)).limit(1);
+  return rows[0] ?? null;
 }
 
 // ---------- Загрузка ----------
@@ -85,13 +96,57 @@ export type MediaUploadInput = {
   type: "audio" | "video";
   mimeType: string;
   fileStream: ReadableStream;
+  sizeBytes: number;
   fileName?: string;
   // Отдельная аудиодорожка видео — вход для Whisper и безопасного retry.
-  audioTrack?: { stream: ReadableStream; mimeType: string; fileName?: string } | null;
+  audioTrack?: { stream: ReadableStream; mimeType: string; sizeBytes: number; fileName?: string } | null;
   durationMs?: number;
   width?: number;
   height?: number;
 };
+
+export type PersistUploadedMediaInput = {
+  mediaId: string;
+  journalEntryId: string;
+  type: "audio" | "video";
+  storageKey: string;
+  transcriptionInputKey?: string | null;
+  mimeType: string;
+  fileName?: string;
+  sizeBytes: number;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+};
+
+export async function persistUploadedJournalMedia(input: PersistUploadedMediaInput): Promise<JournalMedia> {
+  await ensureMediaStorageReady();
+  const database = await getDb();
+  await requireEntryExists(database, input.journalEntryId);
+  const now = nowIso();
+  const row: typeof journalMedia.$inferInsert = {
+    id: input.mediaId,
+    journalEntryId: input.journalEntryId,
+    type: input.type,
+    storageKey: input.storageKey,
+    transcriptionInputKey: input.transcriptionInputKey ?? null,
+    mimeType: normalizeMime(input.mimeType),
+    originalFilename: input.fileName ?? null,
+    sizeBytes: input.sizeBytes,
+    durationMs: input.durationMs ?? null,
+    width: input.width ?? null,
+    height: input.height ?? null,
+    transcript: null,
+    transcriptEdited: false,
+    transcriptionStatus: "pending",
+    transcriptionError: null,
+    transcriptionProvider: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await database.insert(journalMedia).values(row);
+  return mediaToJson(row as typeof journalMedia.$inferSelect);
+}
 
 export async function uploadJournalMedia(input: MediaUploadInput): Promise<JournalMedia> {
   const normalizedMime = normalizeMime(input.mimeType);
@@ -107,6 +162,7 @@ export async function uploadJournalMedia(input: MediaUploadInput): Promise<Journ
     throw new ApiError(400, `Неподдерживаемый формат аудиодорожки: ${input.audioTrack?.mimeType || "неизвестен"}`);
   }
 
+  await ensureMediaStorageReady();
   const bucket = await getMediaBucket(); // проверяем хранилище до записи метаданных
   const database = await getDb();
   await requireEntryExists(database, input.journalEntryId);
@@ -119,6 +175,7 @@ export async function uploadJournalMedia(input: MediaUploadInput): Promise<Journ
 
   const main = await putStreamLimited(bucket, storageKey, input.fileStream, {
     maxSizeBytes,
+    expectedSizeBytes: input.sizeBytes,
     contentType: normalizedMime,
     customMetadata: { mediaId, journalEntryId: input.journalEntryId },
   });
@@ -129,6 +186,7 @@ export async function uploadJournalMedia(input: MediaUploadInput): Promise<Journ
     try {
       await putStreamLimited(bucket, trackKey, input.audioTrack.stream, {
         maxSizeBytes: MAX_AUDIO_SIZE_BYTES,
+        expectedSizeBytes: input.audioTrack.sizeBytes,
         contentType: audioTrackMime ?? "application/octet-stream",
         customMetadata: { mediaId, journalEntryId: input.journalEntryId, kind: "transcription-track" },
       });

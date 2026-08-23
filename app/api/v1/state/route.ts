@@ -11,12 +11,14 @@ import { getDb } from "@/db";
 import { calendarEvents, goals, ideas, journalEntries, tasks } from "@/db/schema";
 import { entryToJson, eventToJson, goalToJson, ideaToJson, jsonOk, readBool, readInt, readJsonBody, readOneOf, readOptionalText, readOptionalTime, readTags, readText, requireIsoDate, requireOneOf, requireText, taskToJson, ApiError, nowIso, withApi } from "@/lib/api";
 import { attachEntryMedia, listAllMedia, pruneOrphanedMedia } from "@/lib/journal-media";
+import { ensureMediaStorageReady } from "@/lib/storage-health";
 
 const CATEGORIES = ["thought", "want", "project", "purchase", "someday"] as const;
 const STATUSES = ["new", "thinking", "plan", "done", "archive"] as const;
 const PERIODS = ["week", "month", "year"] as const;
 
 export const GET = withApi(async () => {
+  await ensureMediaStorageReady({ requireMedia: false });
   const db = await getDb();
   const [taskRows, goalRows, entryRows, eventRows, ideaRows] = await Promise.all([
     db.select().from(tasks).orderBy(asc(tasks.date), asc(tasks.position), asc(tasks.createdAt)),
@@ -139,6 +141,7 @@ function parseIdeaItem(value: unknown, index: number): typeof ideas.$inferInsert
 }
 
 export const PUT = withApi(async (request) => {
+  await ensureMediaStorageReady({ requireMedia: false });
   const body = await readJsonBody(request);
   const taskRows = readArray(body.tasks, "tasks").map(parseTaskItem);
   const goalRows = readArray(body.goals, "goals").map(parseGoalItem);

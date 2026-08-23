@@ -5,8 +5,10 @@ import { getDb } from "@/db";
 import { journalEntries } from "@/db/schema";
 import { entryToJson, jsonOk, newId, nowIso, readIsoDate, readJsonBody, readOptionalText, readTags, requireResourceId, todayDate, ApiError, withApi } from "@/lib/api";
 import { attachEntryMedia, listAllMedia } from "@/lib/journal-media";
+import { ensureMediaStorageReady } from "@/lib/storage-health";
 
 export const GET = withApi(async (request) => {
+  await ensureMediaStorageReady({ requireMedia: false });
   const url = new URL(request.url);
   const date = readIsoDate(url.searchParams.get("date"), "date", { required: false });
   const db = await getDb();
@@ -29,6 +31,9 @@ export const POST = withApi(async (request) => {
   const mood = readOptionalText(body.mood, "mood", { maxLength: 60 }) ?? null;
   const tags = readTags(body.tags, "tags");
 
+  // Media-only entries require the nullable body introduced by migration 0001.
+  // The check is idempotent and preserves all legacy rows.
+  await ensureMediaStorageReady({ requireMedia: false });
   const db = await getDb();
   if (body.id !== undefined) {
     await requireEntryIdFree(db, id);
