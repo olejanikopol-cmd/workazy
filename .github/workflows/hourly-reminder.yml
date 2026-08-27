@@ -2,7 +2,10 @@ name: Hourly Workazy reminder
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    # Два запуска вне начала часа: GitHub чаще задерживает или пропускает cron на :00.
+    # Серверный lock оставляет только одно Telegram-сообщение в каждом часовом слоте.
+    - cron: "17 * * * *"
+    - cron: "47 * * * *"
   workflow_dispatch:
   push:
     paths:
