@@ -2,9 +2,10 @@ name: Hourly Workazy reminder
 
 on:
   schedule:
-    # Резерв после основного cron в Sites/Cloudflare (:12). Серверный lock
-    # оставляет только одно Telegram-сообщение в каждом часовом слоте.
-    - cron: "42 * * * *"
+    # GitHub иногда задерживает или пропускает одиночные scheduled runs.
+    # Несколько попыток в час дают резерв, а серверный lock всё равно
+    # пропускает в Telegram только одно сообщение за час.
+    - cron: "7,17,27,37,47,57 * * * *"
   workflow_dispatch:
   push:
     paths:
@@ -21,6 +22,7 @@ concurrency:
 jobs:
   send-reminder:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     steps:
       - name: Request GitHub identity token
         id: oidc
@@ -33,7 +35,8 @@ jobs:
         env:
           GITHUB_ID_TOKEN: ${{ steps.oidc.outputs.result }}
         run: |
-          curl --fail-with-body --silent --show-error --retry 2 \
+          curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 --max-time 30 --retry 3 --retry-all-errors \
             --request POST \
             --header "Authorization: Bearer $GITHUB_ID_TOKEN" \
             "https://personal-planner.uchepir.chatgpt.site/api/telegram/hourly"
