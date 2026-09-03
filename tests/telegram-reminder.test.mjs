@@ -233,7 +233,7 @@ test("GitHub keeps an authenticated exact-time reminder poller alive", async () 
   assert.match(proxy, /verifyGithubActionsRequest/);
   assert.match(proxy, /api\/v1\/reminders\/tick/);
   assert.match(proxy, /searchParams\.set\("dueOnly", dueOnly\)/);
-  assert.match(tick, /if \(dueOnly\) \{[\s\S]*return jsonOk\(\{ sent: due\.sent > 0, due \}\)/);
+  assert.match(tick, /if \(dueOnly && digestMinute !== "55"\) \{[\s\S]*return jsonOk\(\{ sent: due\.sent > 0, due \}\)/);
 });
 
 test("the Worker runs exact-time reminder ticks every minute without the public URL", async () => {

@@ -55,6 +55,15 @@ function currentDigestHour(now: Date): string {
   }
 }
 
+function currentDigestMinute(now: Date): string {
+  const timeZone = process.env.WORKAZY_TIME_ZONE ?? "Europe/Kyiv";
+  try {
+    return new Intl.DateTimeFormat("en", { timeZone, minute: "2-digit" }).format(now);
+  } catch {
+    return String(now.getMinutes()).padStart(2, "0");
+  }
+}
+
 function currentHourBucket(now: Date): string {
   const timeZone = process.env.WORKAZY_TIME_ZONE ?? "Europe/Kyiv";
   try {
@@ -239,6 +248,7 @@ export const POST = withApi(async (request) => {
   const nextDate = shiftDayDate(date, 1);
   const hourBucket = currentHourBucket(now);
   const digestHour = currentDigestHour(now);
+  const digestMinute = currentDigestMinute(now);
   const lockKey = `telegram-hour:${hourBucket}`;
   const db = await getDb();
 
@@ -260,7 +270,10 @@ export const POST = withApi(async (request) => {
   if (due.errors.length) {
     throw new ApiError(502, `Не удалось отправить запланированное уведомление в Telegram: ${due.errors[0]}`);
   }
-  if (dueOnly) {
+  // Any healthy minute poller can deliver the regular digest at Kyiv :55.
+  // This keeps timing correct even when the caller is an older GitHub job
+  // that otherwise asks only for event and obligation notifications.
+  if (dueOnly && digestMinute !== "55") {
     return jsonOk({ sent: due.sent > 0, due });
   }
 
