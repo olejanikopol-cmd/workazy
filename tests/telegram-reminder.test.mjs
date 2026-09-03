@@ -160,7 +160,8 @@ test("reminder schema supports digest entries", async () => {
 test("GitHub checks protected reminders every five minutes", async () => {
   const source = await readFile(new URL(".github/workflows/hourly-reminder.yml", root), "utf8");
   const proxy = await readFile(new URL("app/api/telegram/hourly/route.ts", root), "utf8");
-  assert.match(source, /cron: "\*\/5 \* \* \* \*"/, "GitHub проверяет сроки каждые пять минут");
+  assert.match(source, /cron: "2-59\/5 \* \* \* \*"/, "GitHub проверяет сроки каждые пять минут вне перегруженной нулевой минуты");
+  assert.doesNotMatch(source, /cron: "\*\/5 \* \* \* \*"/, "запуск не должен попадать на начало часа");
   assert.match(source, /timeout-minutes: 3/);
   assert.match(source, /--retry 3 --retry-all-errors/);
   assert.doesNotMatch(source, /cron: "0 \* \* \* \*"/);
