@@ -117,6 +117,13 @@ export function calendarEventDueAt(
   return startsAt ? new Date(startsAt.getTime() - minutes * 60 * 1000) : null;
 }
 
+export function calendarEventStartsAt(
+  event: Pick<CalendarEvent, "date" | "time">,
+  timeZone: string,
+): Date | null {
+  return event.time ? zonedDateTimeToUtc(event.date, event.time, timeZone) : null;
+}
+
 export function obligationDueAt(
   obligation: Pick<FinanceObligation, "dueDate" | "reminderTime">,
   timeZone: string,
@@ -195,14 +202,37 @@ export function collectDueTelegramNotifications({
 }): DueTelegramNotification[] {
   const notifications: DueTelegramNotification[] = [];
   for (const event of events) {
-    const dueAt = calendarEventDueAt(event, timeZone);
-    if (!dueAt || !isDue(dueAt, now, catchUpMs)) continue;
-    notifications.push({
-      entityType: "event",
-      entityId: event.id,
-      dueAt: dueAt.toISOString(),
-      text: buildCalendarTelegramText(event, now, timeZone),
-    });
+    const startsAt = calendarEventStartsAt(event, timeZone);
+    if (!startsAt) continue;
+
+    // The selected lead time is an additional alert. Do not replay a missed
+    // advance alert once the event itself has begun; the start alert below is
+    // the useful notification at that point.
+    const advanceDueAt = calendarEventDueAt(event, timeZone);
+    if (
+      advanceDueAt
+      && advanceDueAt.getTime() < startsAt.getTime()
+      && now.getTime() < startsAt.getTime()
+      && isDue(advanceDueAt, now, catchUpMs)
+    ) {
+      notifications.push({
+        entityType: "event",
+        entityId: event.id,
+        dueAt: advanceDueAt.toISOString(),
+        text: buildCalendarTelegramText(event, now, timeZone),
+      });
+    }
+
+    // Every timed event also receives its own independent alert at start time.
+    // Its different dueAt value gives it a separate anti-duplicate lock.
+    if (isDue(startsAt, now, catchUpMs)) {
+      notifications.push({
+        entityType: "event",
+        entityId: event.id,
+        dueAt: startsAt.toISOString(),
+        text: buildCalendarTelegramText(event, now, timeZone),
+      });
+    }
   }
   for (const obligation of obligations) {
     if (obligation.completed) continue;

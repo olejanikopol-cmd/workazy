@@ -664,7 +664,7 @@ export function CalendarScreen({ events, setEvents, selectedDate, setSelectedDat
 
     <div className="selected-day-head"><div><span>Выбранный день</span><h2>{displayDate(selectedDate)}</h2></div><button onClick={() => setAddOpen(true)}>+ Событие</button></div>
     <div className="day-agenda">
-      {selectedEvents.map((event) => <button type="button" className="agenda-item event agenda-event-delete" key={event.id} onClick={() => removeEvent(event)} aria-label={`Удалить событие «${event.title}»`}><div className="agenda-time">{event.time || "—"}</div><div><h3>{event.title}</h3><p>{event.reminder || "Без напоминания"}</p></div><span className="agenda-delete" aria-hidden="true"><Icon name="close" size={15} /></span></button>)}
+      {selectedEvents.map((event) => <button type="button" className="agenda-item event agenda-event-delete" key={event.id} onClick={() => removeEvent(event)} aria-label={`Удалить событие «${event.title}»`}><div className="agenda-time">{event.time || "—"}</div><div><h3>{event.title}</h3><p>{event.reminder === "Не напоминать" ? "В момент события" : (event.reminder || "В момент события")}</p></div><span className="agenda-delete" aria-hidden="true"><Icon name="close" size={15} /></span></button>)}
       {!selectedEvents.length && <div className="empty-card mini-empty"><Icon name="calendar" size={24} /><h3>Событий нет</h3><p>Можно оставить этот день свободным.</p></div>}
     </div>
 
@@ -673,7 +673,8 @@ export function CalendarScreen({ events, setEvents, selectedDate, setSelectedDat
       <label className="field"><span>Название</span><input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Например, тренировка" /></label>
       <div className="field-pair"><label className="field"><span>Дата</span><input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} /></label><label className="field"><span>Время</span><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></label></div>
       <label className="field"><span>Заметка</span><textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Необязательно" /></label>
-      <label className="field"><span>Напоминание</span><select value={reminder} onChange={(e) => setReminder(e.target.value)}><option>За 10 минут</option><option>За 30 минут</option><option>За 1 час</option><option>Не напоминать</option></select></label>
+      <label className="field"><span>Дополнительное напоминание</span><select value={reminder} onChange={(e) => setReminder(e.target.value)}><option>За 10 минут</option><option>За 30 минут</option><option>За 1 час</option><option>Только в момент события</option></select></label>
+      <p className="sheet-description">В момент события Telegram напомнит ещё раз.</p>
       <button className="sheet-submit">Добавить событие</button>
     </form></div>}
   </section>;

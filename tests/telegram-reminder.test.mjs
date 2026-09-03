@@ -129,6 +129,35 @@ test("due reminder messages match the requested urgent format", async () => {
   assert.match(notifications.find((item) => item.entityId === "purchase-1").text, /НАДО КУПИТЬ: НОУТБУК/);
 });
 
+test("a calendar event sends once in advance and once again at start time", async () => {
+  const source = await readFile(new URL("lib/reminder-scheduler.ts", root), "utf8");
+  const output = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const scheduler = await import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
+  const event = { id: "event-1", title: "Собеседование", date: "2026-09-07", time: "18:00", reminder: "За 30 минут" };
+
+  const advance = scheduler.collectDueTelegramNotifications({
+    events: [event], obligations: [], now: new Date("2026-09-07T14:30:05.000Z"), timeZone: "Europe/Kyiv",
+  });
+  assert.equal(advance.length, 1);
+  assert.equal(advance[0].dueAt, "2026-09-07T14:30:00.000Z", "первое сообщение приходит в 17:30 по Киеву");
+
+  const atStart = scheduler.collectDueTelegramNotifications({
+    events: [event], obligations: [], now: new Date("2026-09-07T15:00:05.000Z"), timeZone: "Europe/Kyiv",
+  });
+  assert.equal(atStart.length, 1, "после начала не отправляется запоздалый дубль предварительного сообщения");
+  assert.equal(atStart[0].dueAt, "2026-09-07T15:00:00.000Z", "второе сообщение приходит в 18:00 по Киеву");
+
+  const startOnlyEvent = { ...event, id: "event-2", reminder: "Только в момент события" };
+  assert.equal(scheduler.collectDueTelegramNotifications({
+    events: [startOnlyEvent], obligations: [], now: new Date("2026-09-07T14:30:05.000Z"), timeZone: "Europe/Kyiv",
+  }).length, 0);
+  assert.equal(scheduler.collectDueTelegramNotifications({
+    events: [startOnlyEvent], obligations: [], now: new Date("2026-09-07T15:00:05.000Z"), timeZone: "Europe/Kyiv",
+  }).length, 1);
+});
+
 test("telegram config trims and validates token and chat id", async () => {
   const source = await readFile(new URL("lib/telegram.ts", root), "utf8");
   const output = ts.transpileModule(source, {
@@ -157,17 +186,22 @@ test("reminder schema supports digest entries", async () => {
   assert.match(source, /"task", "event", "obligation", "digest"/);
 });
 
-test("GitHub checks protected reminders every five minutes", async () => {
+test("GitHub keeps an authenticated exact-time reminder poller alive", async () => {
   const source = await readFile(new URL(".github/workflows/hourly-reminder.yml", root), "utf8");
   const proxy = await readFile(new URL("app/api/telegram/hourly/route.ts", root), "utf8");
-  assert.match(source, /cron: "2-59\/5 \* \* \* \*"/, "GitHub проверяет сроки каждые пять минут вне перегруженной нулевой минуты");
-  assert.doesNotMatch(source, /cron: "\*\/5 \* \* \* \*"/, "запуск не должен попадать на начало часа");
-  assert.match(source, /timeout-minutes: 3/);
-  assert.match(source, /--retry 3 --retry-all-errors/);
+  const tick = await readFile(new URL("app/api/v1/reminders/tick/route.ts", root), "utf8");
+  assert.match(source, /cron: "53 \* \* \* \*"/, "часовой воркер запускается вне перегруженной нулевой минуты");
+  assert.match(source, /timeout-minutes: 65/);
+  assert.match(source, /pollIntervalMs = 15_000/);
+  assert.match(source, /dueOnly=true/);
+  assert.match(source, /cancel-in-progress: true/);
+  assert.match(source, /refreshTokenAt = Date\.now\(\) \+ 4 \* 60_000/);
   assert.doesNotMatch(source, /cron: "0 \* \* \* \*"/);
   assert.match(source, /id-token: write/);
-  assert.match(source, /core\.getIDToken\('workazy-hourly'\)/);
+  assert.match(source, /core\.getIDToken\("workazy-hourly"\)/);
   assert.match(source, /api\/telegram\/hourly/);
   assert.match(proxy, /verifyGithubActionsRequest/);
   assert.match(proxy, /api\/v1\/reminders\/tick/);
+  assert.match(proxy, /searchParams\.set\("dueOnly", dueOnly\)/);
+  assert.match(tick, /if \(dueOnly\) \{[\s\S]*return jsonOk\(\{ sent: due\.sent > 0, due \}\)/);
 });

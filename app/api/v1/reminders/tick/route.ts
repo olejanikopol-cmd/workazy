@@ -232,6 +232,7 @@ function buildMessage(
 export const POST = withApi(async (request) => {
   const url = new URL(request.url);
   const force = readQueryBool(url.searchParams.get("force"), "force") ?? false;
+  const dueOnly = readQueryBool(url.searchParams.get("dueOnly"), "dueOnly") ?? false;
   const now = new Date();
   const date = todayDate(now);
   const previousDate = shiftDayDate(date, -1);
@@ -241,17 +242,7 @@ export const POST = withApi(async (request) => {
   const lockKey = `telegram-hour:${hourBucket}`;
   const db = await getDb();
 
-  const [overdueTasks, dayTasks, dayEvents, nextTasks, nextEvents, reminderEvents, financeRows] = await Promise.all([
-    db
-      .select()
-      .from(tasks)
-      .where(and(lt(tasks.date, date), eq(tasks.completed, false)))
-      .orderBy(desc(tasks.date), asc(tasks.position), asc(tasks.createdAt))
-      .limit(OVERDUE_QUERY_LIMIT),
-    db.select().from(tasks).where(eq(tasks.date, date)).orderBy(asc(tasks.position), asc(tasks.createdAt)),
-    db.select().from(calendarEvents).where(eq(calendarEvents.date, date)).orderBy(asc(calendarEvents.time)),
-    db.select().from(tasks).where(eq(tasks.date, nextDate)).orderBy(asc(tasks.position), asc(tasks.createdAt)),
-    db.select().from(calendarEvents).where(eq(calendarEvents.date, nextDate)).orderBy(asc(calendarEvents.time)),
+  const [reminderEvents, financeRows] = await Promise.all([
     db.select().from(calendarEvents)
       .where(and(gte(calendarEvents.date, previousDate), lte(calendarEvents.date, nextDate)))
       .orderBy(asc(calendarEvents.date), asc(calendarEvents.time)),
@@ -269,6 +260,22 @@ export const POST = withApi(async (request) => {
   if (due.errors.length) {
     throw new ApiError(502, `Не удалось отправить запланированное уведомление в Telegram: ${due.errors[0]}`);
   }
+  if (dueOnly) {
+    return jsonOk({ sent: due.sent > 0, due });
+  }
+
+  const [overdueTasks, dayTasks, dayEvents, nextTasks, nextEvents] = await Promise.all([
+    db
+      .select()
+      .from(tasks)
+      .where(and(lt(tasks.date, date), eq(tasks.completed, false)))
+      .orderBy(desc(tasks.date), asc(tasks.position), asc(tasks.createdAt))
+      .limit(OVERDUE_QUERY_LIMIT),
+    db.select().from(tasks).where(eq(tasks.date, date)).orderBy(asc(tasks.position), asc(tasks.createdAt)),
+    db.select().from(calendarEvents).where(eq(calendarEvents.date, date)).orderBy(asc(calendarEvents.time)),
+    db.select().from(tasks).where(eq(tasks.date, nextDate)).orderBy(asc(tasks.position), asc(tasks.createdAt)),
+    db.select().from(calendarEvents).where(eq(calendarEvents.date, nextDate)).orderBy(asc(calendarEvents.time)),
+  ]);
 
   const pendingTasks = dayTasks.filter((task) => !task.completed);
   const yesterdayPending = overdueTasks.filter((task) => task.date === previousDate).length;

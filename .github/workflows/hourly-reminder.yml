@@ -2,14 +2,16 @@ name: Workazy Telegram reminders
 
 on:
   schedule:
-    # Start at minute 2 instead of minute 0: GitHub documents that jobs at the
-    # beginning of an hour are more likely to be delayed or dropped.
-    # The interval remains exactly five minutes; server locks prevent duplicates.
-    - cron: "2-59/5 * * * *"
+    # One runner stays alive across the whole hour and checks exact reminders
+    # every 15 seconds. Minute 53 avoids the busiest start-of-hour queue.
+    - cron: "53 * * * *"
   workflow_dispatch:
   push:
     paths:
       - .github/workflows/hourly-reminder.yml
+      - app/api/telegram/hourly/route.ts
+      - app/api/v1/reminders/tick/route.ts
+      - lib/reminder-scheduler.ts
 
 permissions:
   contents: read
@@ -17,26 +19,58 @@ permissions:
 
 concurrency:
   group: workazy-telegram-reminders
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   send-reminder:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 65
     steps:
-      - name: Request GitHub identity token
-        id: oidc
+      - name: Deliver digest and exact-time reminders
         uses: actions/github-script@v7
         with:
-          script: return await core.getIDToken('workazy-hourly')
-          result-encoding: string
+          script: |
+            const endpoint = "https://personal-planner.uchepir.chatgpt.site/api/telegram/hourly";
+            const pollIntervalMs = 15_000;
+            const runUntil = Date.now() + 62 * 60_000;
+            let token = "";
+            let refreshTokenAt = 0;
+            let consecutiveFailures = 0;
 
-      - name: Trigger Telegram digest
-        env:
-          GITHUB_ID_TOKEN: ${{ steps.oidc.outputs.result }}
-        run: |
-          curl --fail-with-body --silent --show-error \
-            --connect-timeout 10 --max-time 30 --retry 3 --retry-all-errors \
-            --request POST \
-            --header "Authorization: Bearer $GITHUB_ID_TOKEN" \
-            "https://personal-planner.uchepir.chatgpt.site/api/telegram/hourly"
+            const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+            async function post(dueOnly) {
+              if (!token || Date.now() >= refreshTokenAt) {
+                token = await core.getIDToken("workazy-hourly");
+                refreshTokenAt = Date.now() + 4 * 60_000;
+              }
+
+              const url = dueOnly ? `${endpoint}?dueOnly=true` : endpoint;
+              const response = await fetch(url, {
+                method: "POST",
+                headers: { authorization: `Bearer ${token}` },
+                signal: AbortSignal.timeout(30_000),
+              });
+              const body = await response.text();
+              if (!response.ok) throw new Error(`${response.status} ${body}`);
+              return body ? JSON.parse(body) : {};
+            }
+
+            const digest = await post(false);
+            core.info(`Hourly digest checked: ${JSON.stringify(digest)}`);
+
+            while (Date.now() < runUntil) {
+              const startedAt = Date.now();
+              try {
+                const result = await post(true);
+                consecutiveFailures = 0;
+                if (result?.data?.due?.sent) {
+                  core.info(`Sent exact reminder: ${JSON.stringify(result.data.due)}`);
+                }
+              } catch (error) {
+                consecutiveFailures += 1;
+                core.warning(`Reminder check ${consecutiveFailures} failed: ${error.message}`);
+                if (consecutiveFailures >= 5) throw error;
+              }
+              await sleep(Math.max(0, pollIntervalMs - (Date.now() - startedAt)));
+            }

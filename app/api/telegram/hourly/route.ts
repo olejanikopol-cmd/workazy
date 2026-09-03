@@ -23,6 +23,8 @@ export async function POST(request: Request) {
   }
 
   const tickUrl = new URL("/api/v1/reminders/tick", request.url);
+  const dueOnly = new URL(request.url).searchParams.get("dueOnly");
+  if (dueOnly !== null) tickUrl.searchParams.set("dueOnly", dueOnly);
   const response = await fetch(tickUrl, {
     method: "POST",
     headers: { authorization: `Bearer ${apiToken}` },
