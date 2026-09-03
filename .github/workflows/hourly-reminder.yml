@@ -56,8 +56,15 @@ jobs:
               return body ? JSON.parse(body) : {};
             }
 
-            const digest = await post(false);
-            core.info(`Hourly digest checked: ${JSON.stringify(digest)}`);
+            try {
+              const digest = await post(false);
+              core.info(`Hourly digest checked: ${JSON.stringify(digest)}`);
+            } catch (error) {
+              // A temporary digest failure must not disable exact reminders
+              // for the rest of the hour. The poller keeps retrying below.
+              token = "";
+              core.warning(`Hourly digest failed; exact checks will continue: ${error.message}`);
+            }
 
             while (Date.now() < runUntil) {
               const startedAt = Date.now();
@@ -70,7 +77,9 @@ jobs:
               } catch (error) {
                 consecutiveFailures += 1;
                 core.warning(`Reminder check ${consecutiveFailures} failed: ${error.message}`);
-                if (consecutiveFailures >= 5) throw error;
+                // Keep the runner alive so a temporary site, network or
+                // Telegram outage can recover without waiting for a new job.
+                if (consecutiveFailures % 5 === 0) token = "";
               }
               await sleep(Math.max(0, pollIntervalMs - (Date.now() - startedAt)));
             }

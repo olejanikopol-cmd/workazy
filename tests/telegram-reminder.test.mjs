@@ -158,6 +158,32 @@ test("a calendar event sends once in advance and once again at start time", asyn
   }).length, 1);
 });
 
+test("every selectable lead time is additional to the event-time alert", async () => {
+  const source = await readFile(new URL("lib/reminder-scheduler.ts", root), "utf8");
+  const output = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const scheduler = await import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
+  const cases = [
+    { reminder: "За 10 минут", advanceUtc: "2026-09-07T14:50:00.000Z" },
+    { reminder: "За 30 минут", advanceUtc: "2026-09-07T14:30:00.000Z" },
+    { reminder: "За 1 час", advanceUtc: "2026-09-07T14:00:00.000Z" },
+  ];
+
+  for (const [index, item] of cases.entries()) {
+    const event = { id: `event-${index}`, title: "Проверка", date: "2026-09-07", time: "18:00", reminder: item.reminder };
+    const advance = scheduler.collectDueTelegramNotifications({
+      events: [event], obligations: [], now: new Date(new Date(item.advanceUtc).getTime() + 5_000), timeZone: "Europe/Kyiv",
+    });
+    assert.deepEqual(advance.map((notification) => notification.dueAt), [item.advanceUtc], `${item.reminder} создаёт предварительное сообщение`);
+
+    const atStart = scheduler.collectDueTelegramNotifications({
+      events: [event], obligations: [], now: new Date("2026-09-07T15:00:05.000Z"), timeZone: "Europe/Kyiv",
+    });
+    assert.deepEqual(atStart.map((notification) => notification.dueAt), ["2026-09-07T15:00:00.000Z"], `${item.reminder} не отменяет сообщение в 18:00`);
+  }
+});
+
 test("telegram config trims and validates token and chat id", async () => {
   const source = await readFile(new URL("lib/telegram.ts", root), "utf8");
   const output = ts.transpileModule(source, {
@@ -196,6 +222,8 @@ test("GitHub keeps an authenticated exact-time reminder poller alive", async () 
   assert.match(source, /dueOnly=true/);
   assert.match(source, /cancel-in-progress: true/);
   assert.match(source, /refreshTokenAt = Date\.now\(\) \+ 4 \* 60_000/);
+  assert.match(source, /exact checks will continue/);
+  assert.doesNotMatch(source, /consecutiveFailures >= 5\) throw/);
   assert.doesNotMatch(source, /cron: "0 \* \* \* \*"/);
   assert.match(source, /id-token: write/);
   assert.match(source, /core\.getIDToken\("workazy-hourly"\)/);
