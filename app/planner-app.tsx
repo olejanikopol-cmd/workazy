@@ -1,20 +1,55 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AppTab, CalendarEvent, Goal, Idea, JournalEntry, PlanTask } from "@/lib/types";
-import { initialEntries, initialEvents, initialGoals, initialIdeas, initialTasks, localDateIso, todayIso } from "@/lib/planner-data";
+import type { AppTab, Assignment, CalendarEvent, FinanceState, Goal, Idea, JournalEntry, PlanTask } from "@/lib/types";
+import { initialAssignments, initialEntries, initialEvents, initialFinanceState, initialGoals, initialIdeas, initialTasks, localDateIso, todayIso } from "@/lib/planner-data";
+import { normalizeFinanceState } from "@/lib/finance";
 import { loadPlannerState, savePlannerState } from "@/lib/planner-storage";
 import { adoptServerState, defaultApiConfig, loadApiConfig, persistPlannerState, saveApiConfig, type PlannerApiConfig } from "@/lib/planner-api";
-import { CalendarScreen, GoalsScreen, IdeasScreen, JournalScreen, ProgressScreen, SettingsSheet } from "./secondary-screens";
+import { CalendarScreen, GoalsScreen, IdeasScreen, JournalScreen, SettingsSheet, TasksScreen, TaskTextSheet } from "./secondary-screens";
+import { FinanceScreen } from "./finance-screen";
 
-const tabs: { id: AppTab; label: string; icon: string }[] = [
-  { id: "plan", label: "План", icon: "check" },
-  { id: "goals", label: "Цели", icon: "target" },
-  { id: "journal", label: "Дневник", icon: "book" },
+type PrimaryTab = "planning" | "calendar" | "records" | "finance";
+
+const primaryTabs: { id: PrimaryTab; label: string; icon: string }[] = [
+  { id: "planning", label: "Планы", icon: "check" },
   { id: "calendar", label: "Календарь", icon: "calendar" },
-  { id: "progress", label: "Прогресс", icon: "chart" },
-  { id: "ideas", label: "Идеи", icon: "spark" },
+  { id: "records", label: "Записи", icon: "book" },
+  { id: "finance", label: "Финансы", icon: "wallet" },
 ];
+
+const planningTabs: { id: AppTab; label: string }[] = [
+  { id: "plan", label: "План" },
+  { id: "tasks", label: "Задания" },
+  { id: "goals", label: "Цели" },
+];
+
+const recordTabs: { id: AppTab; label: string }[] = [
+  { id: "journal", label: "Дневник" },
+  { id: "ideas", label: "Идеи" },
+];
+
+const primaryForTab: Record<AppTab, PrimaryTab> = {
+  plan: "planning",
+  tasks: "planning",
+  goals: "planning",
+  calendar: "calendar",
+  journal: "records",
+  ideas: "records",
+  finance: "finance",
+};
+
+function WorkspaceTabs({ tabs, activeTab, label, className, onSelect }: {
+  tabs: { id: AppTab; label: string }[];
+  activeTab: AppTab;
+  label: string;
+  className: string;
+  onSelect: (tab: AppTab) => void;
+}) {
+  return <nav className={`segmented-tabs workspace-tabs ${className}`} role="tablist" aria-label={label}>
+    {tabs.map((tab) => <button type="button" role="tab" key={tab.id} className={activeTab === tab.id ? "active" : ""} aria-selected={activeTab === tab.id} onClick={() => onSelect(tab.id)}>{tab.label}</button>)}
+  </nav>;
+}
 
 const PLAN_DATE_STORAGE_KEY = "workazy-selected-plan-date-v1";
 
@@ -35,6 +70,7 @@ export function Icon({ name, size = 22 }: { name: string; size?: number }) {
   if (name === "book") return <svg {...common}><path d="M4.5 5.5A2.5 2.5 0 0 1 7 3h4v16H7a2.5 2.5 0 0 0-2.5 2V5.5Z" /><path d="M19.5 5.5A2.5 2.5 0 0 0 17 3h-4v16h4a2.5 2.5 0 0 1 2.5 2V5.5Z" /></svg>;
   if (name === "calendar") return <svg {...common}><rect x="3.5" y="5" width="17" height="15.5" rx="3" /><path d="M8 3v4M16 3v4M3.5 10h17" /></svg>;
   if (name === "chart") return <svg {...common}><path d="M5 20v-6M12 20V8M19 20V4" /></svg>;
+  if (name === "list") return <svg {...common}><path d="M9 6h11M9 12h11M9 18h11" /><path d="m4 6 .8.8L6.4 5M4 12l.8.8L6.4 11M4 18l.8.8 1.6-1.8" /></svg>;
   if (name === "plus") return <svg {...common}><path d="M12 5v14M5 12h14" /></svg>;
   if (name === "settings") return <svg {...common}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></svg>;
   if (name === "spark") return <svg {...common}><path d="m12 3 1.3 4.2L17.5 8.5l-4.2 1.3L12 14l-1.3-4.2-4.2-1.3 4.2-1.3L12 3Z" /><path d="m18 15 .7 2.3L21 18l-2.3.7L18 21l-.7-2.3L15 18l2.3-.7L18 15Z" /></svg>;
@@ -45,6 +81,7 @@ export function Icon({ name, size = 22 }: { name: string; size?: number }) {
   if (name === "download") return <svg {...common}><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></svg>;
   if (name === "bell") return <svg {...common}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4" /></svg>;
   if (name === "telegram") return <svg {...common}><path d="m21 4-3 16-6-4-3 3-1-5-5-2 18-8Z" /><path d="m8 14 10-7-8 9" /></svg>;
+  if (name === "wallet") return <svg {...common}><path d="M4 6.5h14.5A1.5 1.5 0 0 1 20 8v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11" /><path d="M15 11h5v4h-5a2 2 0 0 1 0-4Z" /></svg>;
   if (name === "moon") return <svg {...common}><path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z" /></svg>;
   if (name === "mic") return <svg {...common}><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" /></svg>;
   if (name === "video") return <svg {...common}><rect x="3" y="6.5" width="13" height="11" rx="2.5" /><path d="m16 11 5-3v8l-5-3" /></svg>;
@@ -68,32 +105,56 @@ export function displayDate(iso: string) {
   return new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(new Date(`${iso}T12:00:00`));
 }
 
+function displayFullDate(iso: string) {
+  const formatted = new Intl.DateTimeFormat("ru-RU", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  }).format(new Date(`${iso}T12:00:00`));
+  return formatted.charAt(0).toUpperCase() + formatted.slice(1);
+}
+
 export default function PlannerApp() {
   const [activeTab, setActiveTab] = useState<AppTab>("plan");
   const [tasks, setTasks] = useState<PlanTask[]>(initialTasks);
+  const [assignments, setAssignments] = useState<Assignment[]>(initialAssignments);
   const [goals, setGoals] = useState<Goal[]>(initialGoals);
   const [entries, setEntries] = useState<JournalEntry[]>(initialEntries);
   const [events, setEvents] = useState<CalendarEvent[]>(initialEvents);
   const [ideas, setIdeas] = useState<Idea[]>(initialIdeas);
+  const [finances, setFinances] = useState<FinanceState>(initialFinanceState);
   const [hydrated, setHydrated] = useState(false);
   const [selectedDate, setSelectedDate] = useState(todayIso());
   const [editorOpen, setEditorOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editorText, setEditorText] = useState("1. ");
   const [quickTaskTitle, setQuickTaskTitle] = useState("");
+  const [readingTaskId, setReadingTaskId] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [menuPlacement, setMenuPlacement] = useState<"up" | "down">("down");
   const [apiConfig, setApiConfig] = useState<PlannerApiConfig>(defaultApiConfig);
+  const localSaveArmed = useRef(false);
   const syncArmed = useRef(false);
+  const lastTabBySection = useRef<Record<PrimaryTab, AppTab>>({
+    planning: "plan",
+    calendar: "calendar",
+    records: "journal",
+    finance: "finance",
+  });
+  const latestState = useRef({ tasks, assignments, goals, entries, events, ideas, finances });
 
+  const activePrimaryTab = primaryForTab[activeTab];
   const dayTasks = useMemo(() => tasks.filter((task) => task.date === selectedDate), [tasks, selectedDate]);
   const completed = dayTasks.filter((task) => task.completed).length;
   const progress = dayTasks.length ? Math.round((completed / dayTasks.length) * 100) : 0;
+  const readingTask = readingTaskId ? tasks.find((task) => task.id === readingTaskId) ?? null : null;
 
   useEffect(() => {
+    let cancelled = false;
     const saved = loadPlannerState();
     if (saved) {
       if (Array.isArray(saved.tasks)) setTasks(saved.tasks as PlanTask[]);
+      if (Array.isArray(saved.assignments)) setAssignments(saved.assignments as Assignment[]);
       if (Array.isArray(saved.goals)) setGoals(saved.goals as Goal[]);
       if (Array.isArray(saved.entries)) {
         setEntries((saved.entries as JournalEntry[]).map((entry) => ({
@@ -103,36 +164,49 @@ export default function PlannerApp() {
       }
       if (Array.isArray(saved.events)) setEvents(saved.events as CalendarEvent[]);
       if (Array.isArray(saved.ideas)) setIdeas(saved.ideas as Idea[]);
+      setFinances(normalizeFinanceState(saved.finances));
     }
     const storedPlanDate = loadStoredPlanDate();
     if (storedPlanDate) setSelectedDate(storedPlanDate);
-    setHydrated(true);
 
     const config = loadApiConfig();
-    if (config.enabled && config.token && config.baseUrl) {
-      adoptServerState(config)
-        .then((serverState) => {
-          if (serverState) {
-            setTasks(serverState.tasks);
-            setGoals(serverState.goals);
-            setEntries(serverState.entries);
-            setEvents(serverState.events);
-            setIdeas(serverState.ideas);
-          }
-          setApiConfig(config);
-        })
-        .catch((error) => {
-          console.error("Не удалось включить синхронизацию", error);
-          setApiConfig({ ...config, enabled: false });
-        });
-    } else {
+    async function initializeSync() {
+      try {
+        const serverState = config.enabled ? await adoptServerState(config) : null;
+        if (cancelled) return;
+        if (serverState) {
+          setTasks(serverState.tasks);
+          setAssignments(serverState.assignments);
+          setGoals(serverState.goals);
+          setEntries(serverState.entries);
+          setEvents(serverState.events);
+          setIdeas(serverState.ideas);
+          setFinances(serverState.finances);
+          savePlannerState(serverState, serverState.syncUpdatedAt);
+        }
+      } catch (error) {
+        console.error("Не удалось включить синхронизацию", error);
+      }
+      if (cancelled) return;
       setApiConfig(config);
+      setHydrated(true);
     }
+    void initializeSync();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if (hydrated) savePlannerState({ tasks, goals, entries, events, ideas });
-  }, [tasks, goals, entries, events, ideas, hydrated]);
+    if (!hydrated) return;
+    if (!localSaveArmed.current) {
+      localSaveArmed.current = true;
+      return;
+    }
+    savePlannerState({ tasks, assignments, goals, entries, events, ideas, finances });
+  }, [tasks, assignments, goals, entries, events, ideas, finances, hydrated]);
+
+  useEffect(() => {
+    latestState.current = { tasks, assignments, goals, entries, events, ideas, finances };
+  }, [tasks, assignments, goals, entries, events, ideas, finances]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -149,36 +223,54 @@ export default function PlannerApp() {
       syncArmed.current = true;
       return;
     }
-    if (!apiConfig.enabled || !apiConfig.token || !apiConfig.baseUrl) return;
+    if (!apiConfig.enabled) return;
     const timer = window.setTimeout(() => {
-      void persistPlannerState({ tasks, goals, entries, events, ideas }, apiConfig).catch((error) => {
+      void persistPlannerState({ tasks, assignments, goals, entries, events, ideas, finances }, apiConfig).catch((error) => {
         console.error("Не удалось синхронизировать данные", error);
       });
-    }, 800);
+    }, 350);
     return () => window.clearTimeout(timer);
-  }, [tasks, goals, entries, events, ideas, hydrated, apiConfig]);
+  }, [tasks, assignments, goals, entries, events, ideas, finances, hydrated, apiConfig]);
+
+  useEffect(() => {
+    if (!hydrated || !apiConfig.enabled) return;
+    const flush = () => {
+      void persistPlannerState(latestState.current, apiConfig).catch((error) => {
+        console.error("Не удалось завершить синхронизацию", error);
+      });
+    };
+    const flushWhenHidden = () => { if (document.visibilityState === "hidden") flush(); };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", flushWhenHidden);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+    };
+  }, [hydrated, apiConfig]);
 
   async function updateApiConfig(next: PlannerApiConfig) {
-    if (next.enabled) {
-      if (!next.baseUrl || !next.token) throw new Error("Укажите адрес сервера и API-токен");
+    const normalized = { ...next, enabled: true };
+    if (normalized.enabled) {
       const previous = apiConfig;
       setApiConfig({ ...previous, enabled: false });
       try {
-        const serverState = await adoptServerState(next);
+        const serverState = await adoptServerState(normalized);
         if (serverState) {
           setTasks(serverState.tasks);
+          setAssignments(serverState.assignments);
           setGoals(serverState.goals);
           setEntries(serverState.entries);
           setEvents(serverState.events);
           setIdeas(serverState.ideas);
+          setFinances(serverState.finances);
         }
       } catch (error) {
         setApiConfig(previous);
         throw error;
       }
     }
-    setApiConfig(next);
-    saveApiConfig(next);
+    setApiConfig(normalized);
+    saveApiConfig(normalized);
   }
 
   useEffect(() => {
@@ -208,6 +300,7 @@ export default function PlannerApp() {
 
   function removeTask(id: string) {
     setOpenMenuId(null);
+    if (readingTaskId === id) setReadingTaskId(null);
     setTasks((current) => current.filter((task) => task.id !== id));
   }
 
@@ -236,13 +329,13 @@ export default function PlannerApp() {
 
   function handleTaskCardClick(event: React.MouseEvent<HTMLElement>, id: string) {
     if (event.target instanceof HTMLElement && event.target.closest("button, input, label, .task-menu")) return;
-    toggleTask(id);
+    setReadingTaskId(id);
   }
 
   function handleTaskCardKeyDown(event: React.KeyboardEvent<HTMLElement>, id: string) {
     if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
     event.preventDefault();
-    toggleTask(id);
+    setReadingTaskId(id);
   }
 
   function placeMenu(trigger: Element) {
@@ -297,6 +390,18 @@ export default function PlannerApp() {
     setTasks((current) => current.filter((task) => task.date !== selectedDate));
   }
 
+  function openTab(tab: AppTab) {
+    lastTabBySection.current[primaryForTab[tab]] = tab;
+    setActiveTab(tab);
+  }
+
+  function openPrimaryTab(tab: PrimaryTab) {
+    setActiveTab(lastTabBySection.current[tab]);
+  }
+
+  const planningSectionTabs = <WorkspaceTabs tabs={planningTabs} activeTab={activeTab} label="Разделы планирования" className="planning-workspace-tabs" onSelect={openTab} />;
+  const recordSectionTabs = <WorkspaceTabs tabs={recordTabs} activeTab={activeTab} label="Разделы записей" className="records-workspace-tabs" onSelect={openTab} />;
+
   return (
     <main className="app-shell">
       <div className="ambient ambient-one" />
@@ -308,7 +413,7 @@ export default function PlannerApp() {
         </header>
 
         {activeTab === "plan" && <section className="screen plan-screen" aria-labelledby="plan-title">
-          <div className="eyebrow"><span className="status-dot" /> Суббота, 22 августа</div>
+          <div className="eyebrow"><span className="status-dot" /> {displayFullDate(selectedDate)}</div>
           <div className="title-row">
             <div>
               <h1 id="plan-title">{displayDate(selectedDate)}</h1>
@@ -316,6 +421,8 @@ export default function PlannerApp() {
             </div>
             <div className="day-score" aria-label={`${progress} процентов выполнено`}><strong>{progress}</strong><span>%</span></div>
           </div>
+
+          {planningSectionTabs}
 
           <div className="date-switcher" aria-label="Выбор даты плана">
             <button className={selectedDate === todayIso() ? "active" : ""} onClick={() => setSelectedDate(todayIso())}>Сегодня</button>
@@ -338,7 +445,7 @@ export default function PlannerApp() {
 
           <div className="task-list">
             {dayTasks.map((task, index) => (
-              <article key={task.id} className={`task-card ${task.completed ? "completed" : ""} ${openMenuId === task.id ? "menu-open" : ""}`} role="checkbox" aria-checked={task.completed} tabIndex={0} onClick={(event) => handleTaskCardClick(event, task.id)} onKeyDown={(event) => handleTaskCardKeyDown(event, task.id)}>
+              <article key={task.id} className={`task-card ${task.completed ? "completed" : ""} ${openMenuId === task.id ? "menu-open" : ""}`} role="button" aria-label={`Открыть пункт «${task.title}»`} aria-haspopup="dialog" tabIndex={0} onClick={(event) => handleTaskCardClick(event, task.id)} onKeyDown={(event) => handleTaskCardKeyDown(event, task.id)}>
                 <button className="task-check" aria-label={task.completed ? `Вернуть «${task.title}»` : `Выполнить «${task.title}»`} onClick={(event) => { event.stopPropagation(); toggleTask(task.id); }}>{task.completed && <Icon name="check" size={16} />}</button>
                 <div className="task-body"><span className="task-index">{String(index + 1).padStart(2, "0")}</span><p>{task.title}</p></div>
                 <div className={`task-menu ${openMenuId === task.id ? `open drop-${menuPlacement}` : ""}`}>
@@ -361,14 +468,15 @@ export default function PlannerApp() {
           <button className="primary-action" onClick={() => setEditorOpen(true)}><span><Icon name="plus" size={20} /></span>Составить план</button>
         </section>}
 
-        {activeTab === "goals" && <GoalsScreen goals={goals} setGoals={setGoals} />}
-        {activeTab === "journal" && <JournalScreen entries={entries} setEntries={setEntries} apiConfig={apiConfig} />}
-        {activeTab === "calendar" && <CalendarScreen tasks={tasks} events={events} setEvents={setEvents} selectedDate={selectedDate} setSelectedDate={setSelectedDate} />}
-        {activeTab === "progress" && <ProgressScreen tasks={tasks} goals={goals} entries={entries} />}
-        {activeTab === "ideas" && <IdeasScreen ideas={ideas} setIdeas={setIdeas} />}
+        {activeTab === "goals" && <GoalsScreen goals={goals} setGoals={setGoals} sectionTabs={planningSectionTabs} />}
+        {activeTab === "journal" && <JournalScreen entries={entries} setEntries={setEntries} apiConfig={apiConfig} sectionTabs={recordSectionTabs} />}
+        {activeTab === "calendar" && <CalendarScreen events={events} setEvents={setEvents} selectedDate={selectedDate} setSelectedDate={setSelectedDate} />}
+        {activeTab === "tasks" && <TasksScreen assignments={assignments} setAssignments={setAssignments} apiConfig={apiConfig} sectionTabs={planningSectionTabs} />}
+        {activeTab === "finance" && <FinanceScreen finances={finances} setFinances={setFinances} />}
+        {activeTab === "ideas" && <IdeasScreen ideas={ideas} setIdeas={setIdeas} sectionTabs={recordSectionTabs} />}
 
         <nav className="bottom-nav" aria-label="Основная навигация">
-          {tabs.map((tab) => <button key={tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => setActiveTab(tab.id)}><Icon name={tab.icon} /><span>{tab.label}</span></button>)}
+          {primaryTabs.map((tab) => <button key={tab.id} className={activePrimaryTab === tab.id ? "active" : ""} aria-current={activePrimaryTab === tab.id ? "page" : undefined} onClick={() => openPrimaryTab(tab.id)}><Icon name={tab.icon} /><span>{tab.label}</span></button>)}
         </nav>
       </div>
 
@@ -381,6 +489,7 @@ export default function PlannerApp() {
           <div className="editor-footer"><span>{editorText.split("\n").filter((line) => line.replace(/^\s*\d+[.)]\s*/, "").trim()).length} пунктов</span><button onClick={savePlan}>Сохранить план</button></div>
         </section>
       </div>}
+      {readingTask && <TaskTextSheet task={readingTask} onClose={() => setReadingTaskId(null)} onToggle={toggleTask} />}
       {settingsOpen && <SettingsSheet apiConfig={apiConfig} onSaveApiConfig={updateApiConfig} onClose={() => setSettingsOpen(false)} />}
     </main>
   );

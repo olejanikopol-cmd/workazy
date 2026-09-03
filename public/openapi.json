@@ -3,25 +3,24 @@
   "info": {
     "title": "Workazy Planner API",
     "version": "1.0.0",
-    "description": "Личный планер Workazy: задачи на день, цели, дневник, события календаря, идеи и напоминания. Даты — строки YYYY-MM-DD, время — HH:MM, дата-время — ISO-строка с часовым поясом. Часовой пояс данных планера — Europe/Kyiv. Относительные даты («завтра», «в пятницу», «через неделю») ассистент должен сам преобразовать в конкретную дату до вызова. Ответы имеют вид { ok: true, data: ... } или { ok: false, error: \"текст ошибки\" }."
+    "description": "Личный планер Workazy: отдельные задания, ежедневный план, цели, дневник, события календаря, идеи и напоминания. Задания из этого API сохраняются во вкладке «Задания» и не связаны с ежедневным планом. Даты — строки YYYY-MM-DD, время — HH:MM. Ответы имеют вид { ok: true, data: ... } или { ok: false, error: \"текст ошибки\" }."
   },
   "servers": [{ "url": "https://personal-planner.uchepir.chatgpt.site" }],
   "security": [{ "BearerAuth": [] }],
   "paths": {
-    "/api/v1/tasks": {
+    "/api/v1/assignments": {
       "get": {
-        "operationId": "listTasks",
-        "summary": "Список задач на дату",
-        "description": "Возвращает задачи на дату. Без параметра date — задачи на сегодня. Параметр completed фильтрует: false — только невыполненные, true — только выполненные. Каждая задача: id, title, date, completed, position.",
+        "operationId": "listAssignments",
+        "summary": "Список отдельных заданий",
+        "description": "Возвращает задания из вкладки «Задания». Параметр completed фильтрует: false — только активные, true — только выполненные.",
         "parameters": [
-          { "name": "date", "in": "query", "schema": { "type": "string" }, "description": "Дата YYYY-MM-DD" },
           { "name": "completed", "in": "query", "schema": { "type": "boolean" }, "description": "true — только выполненные, false — только невыполненные" }
         ],
         "responses": { "200": { "description": "Список задач", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       },
       "post": {
-        "operationId": "addTask",
-        "summary": "Создать задачу в планере",
+        "operationId": "addAssignment",
+        "summary": "Создать отдельное задание",
         "requestBody": {
           "required": true,
           "content": {
@@ -30,22 +29,22 @@
                 "type": "object",
                 "required": ["title"],
                 "properties": {
-                  "title": { "type": "string", "description": "Текст задачи" },
-                  "date": { "type": "string", "description": "Дата YYYY-MM-DD, по умолчанию сегодня" },
-                  "completed": { "type": "boolean" },
-                  "position": { "type": "integer", "description": "Порядок в списке" }
+                  "title": { "type": "string", "description": "Название задания" },
+                  "description": { "type": "string", "description": "Подробности задания" },
+                  "dueDate": { "type": "string", "description": "Необязательный срок YYYY-MM-DD" },
+                  "completed": { "type": "boolean" }
                 }
               }
             }
           }
         },
-        "responses": { "201": { "description": "Задача создана", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+        "responses": { "201": { "description": "Задание создано", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       }
     },
-    "/api/v1/tasks/{id}": {
+    "/api/v1/assignments/{id}": {
       "patch": {
-        "operationId": "updateTask",
-        "summary": "Обновить задачу: текст, дату или отметку выполнения",
+        "operationId": "updateAssignment",
+        "summary": "Обновить отдельное задание",
         "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
         "requestBody": {
           "required": true,
@@ -55,30 +54,30 @@
                 "type": "object",
                 "properties": {
                   "title": { "type": "string" },
-                  "date": { "type": "string" },
-                  "completed": { "type": "boolean" },
-                  "position": { "type": "integer" }
+                  "description": { "type": "string" },
+                  "dueDate": { "type": "string" },
+                  "completed": { "type": "boolean" }
                 }
               }
             }
           }
         },
-        "responses": { "200": { "description": "Задача обновлена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+        "responses": { "200": { "description": "Задание обновлено", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       },
       "delete": {
-        "operationId": "deleteTask",
-        "summary": "Удалить задачу",
+        "operationId": "deleteAssignment",
+        "summary": "Удалить задание",
         "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
-        "responses": { "200": { "description": "Задача удалена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+        "responses": { "200": { "description": "Задание удалено", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       }
     },
-    "/api/v1/tasks/{id}/complete": {
+    "/api/v1/assignments/{id}/complete": {
       "post": {
-        "operationId": "completeTask",
-        "summary": "Отметить задачу выполненной",
-        "description": "Использовать, когда пользователь говорит «задача выполнена», «отметь выполненной», «готово». Тело запроса не требуется. Если известен только текст задачи, сначала найти её через listTasks и взять id.",
+        "operationId": "completeAssignment",
+        "summary": "Отметить задание выполненным",
+        "description": "Если известен только текст задания, сначала найти его через listAssignments и взять id.",
         "parameters": [{ "$ref": "#/components/parameters/IdPath" }],
-        "responses": { "200": { "description": "Задача выполнена", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
+        "responses": { "200": { "description": "Задание выполнено", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OkResponse" } } } } }
       }
     },
     "/api/v1/goals": {

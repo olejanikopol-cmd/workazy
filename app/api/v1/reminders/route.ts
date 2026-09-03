@@ -9,7 +9,7 @@ import { jsonOk, readJsonBody, readOptionalText, readText, reminderToJson, requi
 
 export const POST = withApi(async (request) => {
   const body = await readJsonBody(request);
-  const entityType = requireOneOf(body.entityType, "entityType", ["task", "event"] as const);
+  const entityType = requireOneOf(body.entityType, "entityType", ["task", "event", "obligation"] as const);
   const entityId = requireText(body.entityId, "entityId", { maxLength: 80 });
   const dueAt = requireIsoDateTime(body.dueAt, "dueAt");
   const channel = readText(body.channel, "channel", { required: false, maxLength: 20 }) ?? "telegram";

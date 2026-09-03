@@ -1,10 +1,9 @@
-name: Hourly Workazy reminder
+name: Workazy Telegram reminders
 
 on:
   schedule:
-    # Server-side lock keeps Telegram delivery to one digest per hour.
-    # The extra attempts are a backup for delayed GitHub scheduled events.
-    - cron: "3,13,23,33,43,53 * * * *"
+    # GitHub's shortest supported interval. Server-side locks prevent duplicates.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
   push:
     paths:
@@ -15,7 +14,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: workazy-hourly-reminder
+  group: workazy-telegram-reminders
   cancel-in-progress: false
 
 jobs:

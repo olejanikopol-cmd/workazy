@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, Dispatch, FormEvent, SetStateAction } from "react";
-import type { CalendarEvent, Goal, GoalPeriod, Idea, IdeaCategory, IdeaStatus, JournalEntry, JournalMedia, PlanTask } from "@/lib/types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { CSSProperties, Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
+import type { Assignment, CalendarEvent, Goal, GoalPeriod, Idea, IdeaCategory, IdeaStatus, JournalEntry, JournalMedia, PlanTask } from "@/lib/types";
 import type { PlannerApiConfig } from "@/lib/planner-api";
-import { createJournalEntryRemote, deleteJournalEntryRemote, deleteMediaRemote, fetchMediaBytes, fetchMediaPlaybackUrl, requestTranscription, updateJournalEntryRemote, uploadJournalMediaFile, validateMediaUploadSizes } from "@/lib/planner-api";
-import { todayIso } from "@/lib/planner-data";
+import { createAssignmentRemote, createJournalEntryRemote, defaultApiConfig, deleteAssignmentRemote, deleteJournalEntryRemote, deleteMediaRemote, fetchMediaBytes, fetchMediaPlaybackUrl, requestTranscription, updateAssignmentRemote, updateJournalEntryRemote, uploadJournalMediaFile, validateMediaUploadSizes } from "@/lib/planner-api";
+import { localDateIso, todayIso } from "@/lib/planner-data";
 import { recorderIsSupported } from "@/lib/media-recorder";
 import { createJournalBackupZip, downloadBlob, entryToMarkdown, mediaFileName, type BackupProgress } from "@/lib/journal-export";
 import { EntryMediaBadges, EntryMediaBlock, MediaDraftCard, MediaRecorderPanel, draftFileName, entrySearchText, type MediaDraft, type RecordingDoneResult } from "./journal-media";
@@ -13,7 +13,146 @@ import { Icon, displayDate, uid } from "./planner-app";
 
 const periodLabels: Record<GoalPeriod, string> = { week: "Неделя", month: "Месяц", year: "Год" };
 
-export function GoalsScreen({ goals, setGoals }: { goals: Goal[]; setGoals: Dispatch<SetStateAction<Goal[]>> }) {
+export function TaskTextSheet({ task, onClose, onToggle }: {
+  task: PlanTask;
+  onClose: () => void;
+  onToggle: (id: string) => void;
+}) {
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <section className="compact-sheet task-reader" role="dialog" aria-modal="true" aria-labelledby="task-reader-title">
+      <div className="modal-handle" />
+      <div className="editor-head">
+        <div><span>{displayDate(task.date)}</span><h2 id="task-reader-title">Пункт плана</h2></div>
+        <button className="icon-button" type="button" onClick={onClose} aria-label="Закрыть"><Icon name="close" size={21} /></button>
+      </div>
+      <div className="task-reader-status">
+        <span className={task.completed ? "done" : "pending"}>{task.completed ? "Выполнено" : "Не выполнено"}</span>
+      </div>
+      <p className="task-reader-body">{task.title}</p>
+      <button className="sheet-submit" type="button" onClick={() => onToggle(task.id)}>{task.completed ? "Вернуть в работу" : "Отметить выполненным"}</button>
+    </section>
+  </div>;
+}
+
+type TaskFilter = "active" | "all" | "done";
+
+const taskFilterLabels: Record<TaskFilter, string> = { active: "Активные", all: "Все", done: "Готовые" };
+
+function AssignmentTextSheet({ assignment, onClose, onToggle, onDelete }: {
+  assignment: Assignment;
+  onClose: () => void;
+  onToggle: (id: string) => void;
+  onDelete: (assignment: Assignment) => void;
+}) {
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <section className="compact-sheet task-reader" role="dialog" aria-modal="true" aria-labelledby="assignment-reader-title">
+      <div className="modal-handle" />
+      <div className="editor-head">
+        <div><span>{assignment.dueDate ? `Срок · ${displayDate(assignment.dueDate)}` : "Без срока"}</span><h2 id="assignment-reader-title">Задание</h2></div>
+        <button className="icon-button" type="button" onClick={onClose} aria-label="Закрыть"><Icon name="close" size={21} /></button>
+      </div>
+      <div className="task-reader-status"><span className={assignment.completed ? "done" : "pending"}>{assignment.completed ? "Выполнено" : "В работе"}</span></div>
+      <h3 className="assignment-reader-title">{assignment.title}</h3>
+      {assignment.description && <p className="task-reader-body">{assignment.description}</p>}
+      <button className="sheet-submit" type="button" onClick={() => onToggle(assignment.id)}>{assignment.completed ? "Вернуть в работу" : "Отметить выполненным"}</button>
+      <button className="sheet-danger" type="button" onClick={() => onDelete(assignment)}>Удалить задание</button>
+    </section>
+  </div>;
+}
+
+export function TasksScreen({ assignments, setAssignments, apiConfig, sectionTabs }: { assignments: Assignment[]; setAssignments: Dispatch<SetStateAction<Assignment[]>>; apiConfig: PlannerApiConfig; sectionTabs?: ReactNode }) {
+  const [filter, setFilter] = useState<TaskFilter>("active");
+  const [title, setTitle] = useState("");
+  const [readingAssignmentId, setReadingAssignmentId] = useState<string | null>(null);
+  const readingAssignment = readingAssignmentId ? assignments.find((assignment) => assignment.id === readingAssignmentId) ?? null : null;
+  const visible = [...assignments]
+    .filter((assignment) => filter === "all" || (filter === "done" ? assignment.completed : !assignment.completed))
+    .sort((a, b) => filter === "active" ? (a.dueDate ?? "9999-12-31").localeCompare(b.dueDate ?? "9999-12-31") : b.updatedAt.localeCompare(a.updatedAt));
+  const activeCount = assignments.filter((assignment) => !assignment.completed).length;
+  const syncEnabled = apiConfig.enabled;
+
+  async function addAssignment(event: FormEvent) {
+    event.preventDefault();
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    const now = new Date().toISOString();
+    const optimistic: Assignment = { id: uid("assignment"), title: trimmed, completed: false, createdAt: now, updatedAt: now };
+    setAssignments((current) => [optimistic, ...current]);
+    setTitle("");
+    if (!syncEnabled) return;
+    try {
+      const saved = await createAssignmentRemote(apiConfig, { title: trimmed });
+      setAssignments((current) => current.map((item) => item.id === optimistic.id ? saved : item));
+    } catch (error) {
+      setAssignments((current) => current.filter((item) => item.id !== optimistic.id));
+      window.alert(error instanceof Error ? error.message : "Не удалось сохранить задание");
+    }
+  }
+
+  async function toggleAssignment(id: string) {
+    const currentAssignment = assignments.find((assignment) => assignment.id === id);
+    if (!currentAssignment) return;
+    const now = new Date().toISOString();
+    const completed = !currentAssignment.completed;
+    setAssignments((current) => current.map((assignment) => assignment.id === id ? { ...assignment, completed, updatedAt: now } : assignment));
+    if (!syncEnabled) return;
+    try {
+      const saved = await updateAssignmentRemote(apiConfig, id, { completed });
+      setAssignments((current) => current.map((assignment) => assignment.id === id ? saved : assignment));
+    } catch (error) {
+      setAssignments((current) => current.map((assignment) => assignment.id === id ? currentAssignment : assignment));
+      window.alert(error instanceof Error ? error.message : "Не удалось обновить задание");
+    }
+  }
+
+  async function deleteAssignment(assignment: Assignment) {
+    if (!window.confirm(`Удалить задание «${assignment.title}»?`)) return;
+    setAssignments((current) => current.filter((item) => item.id !== assignment.id));
+    setReadingAssignmentId(null);
+    if (!syncEnabled) return;
+    try {
+      await deleteAssignmentRemote(apiConfig, assignment.id);
+    } catch (error) {
+      setAssignments((current) => [assignment, ...current]);
+      window.alert(error instanceof Error ? error.message : "Не удалось удалить задание");
+    }
+  }
+
+  return <section className="screen secondary-screen assignments-screen" aria-labelledby="assignments-title">
+    <div className="eyebrow"><span className="status-dot" /> Отдельно от ежедневного плана</div>
+    <div className="secondary-title">
+      <div><h1 id="assignments-title">Задания</h1><p>Из Workazy GPT и добавленные тобой.</p></div>
+      <div className="streak"><strong>{activeCount}</strong><span>активно</span></div>
+    </div>
+    {sectionTabs}
+
+    <form className="quick-task-form assignment-quick-form" onSubmit={(event) => void addAssignment(event)}>
+      <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Добавить новое задание" aria-label="Название нового задания" />
+      <button type="submit" disabled={!title.trim()} aria-label="Добавить задание"><Icon name="plus" size={18} /></button>
+    </form>
+
+    <div className="segmented-tabs assignment-tabs" role="tablist" aria-label="Фильтр заданий">
+      {(Object.keys(taskFilterLabels) as TaskFilter[]).map((value) => <button key={value} role="tab" aria-selected={filter === value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{taskFilterLabels[value]}</button>)}
+    </div>
+
+    <div className="assignment-list">
+      {visible.map((assignment) => <article className={`assignment-card ${assignment.completed ? "completed" : ""}`} key={assignment.id}>
+        <button className="assignment-check" type="button" aria-label={assignment.completed ? `Вернуть «${assignment.title}»` : `Выполнить «${assignment.title}»`} onClick={() => void toggleAssignment(assignment.id)}>{assignment.completed && <Icon name="check" size={16} />}</button>
+        <button className="assignment-open" type="button" onClick={() => setReadingAssignmentId(assignment.id)} aria-haspopup="dialog">
+          <span>{assignment.dueDate ? `До ${displayDate(assignment.dueDate).toLowerCase()}` : "Без срока"}</span>
+          <strong>{assignment.title}</strong>
+          {assignment.description && <p>{assignment.description}</p>}
+        </button>
+        <Icon name="arrow" size={16} />
+      </article>)}
+      {!visible.length && <div className="empty-card"><Icon name="check" size={30} /><h3>{filter === "active" ? "Активных заданий нет" : "Здесь пока пусто"}</h3><p>Задания из Workazy GPT и добавленные вручную появятся здесь.</p></div>}
+    </div>
+
+    {readingAssignment && <AssignmentTextSheet assignment={readingAssignment} onClose={() => setReadingAssignmentId(null)} onToggle={(id) => void toggleAssignment(id)} onDelete={(assignment) => void deleteAssignment(assignment)} />}
+  </section>;
+}
+
+export function GoalsScreen({ goals, setGoals, sectionTabs }: { goals: Goal[]; setGoals: Dispatch<SetStateAction<Goal[]>>; sectionTabs?: ReactNode }) {
   const [period, setPeriod] = useState<GoalPeriod>("week");
   const [addOpen, setAddOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -24,7 +163,8 @@ export function GoalsScreen({ goals, setGoals }: { goals: Goal[]; setGoals: Disp
   function addGoal(event: FormEvent) {
     event.preventDefault();
     if (!title.trim()) return;
-    setGoals((current) => [...current, { id: uid("goal"), title: title.trim(), description: description.trim(), period, progress: 0, createdAt: todayIso(), deadline, completed: false }]);
+    const now = todayIso();
+    setGoals((current) => [...current, { id: uid("goal"), title: title.trim(), description: description.trim(), period, progress: 0, createdAt: now, deadline, completed: false, updatedAt: now }]);
     setTitle("");
     setDescription("");
     setAddOpen(false);
@@ -38,6 +178,7 @@ export function GoalsScreen({ goals, setGoals }: { goals: Goal[]; setGoals: Disp
   return <section className="screen secondary-screen" aria-labelledby="goals-title">
     <div className="eyebrow"><span className="status-dot" /> Направление</div>
     <div className="secondary-title"><div><h1 id="goals-title">Цели</h1><p>Не список дел. То, куда ты идёшь.</p></div><button className="round-add" onClick={() => setAddOpen(true)} aria-label="Добавить цель"><Icon name="plus" /></button></div>
+    {sectionTabs}
 
     <div className="segmented-tabs" role="tablist" aria-label="Период целей">
       {(Object.keys(periodLabels) as GoalPeriod[]).map((value) => <button key={value} role="tab" aria-selected={period === value} className={period === value ? "active" : ""} onClick={() => setPeriod(value)}>{periodLabels[value]}</button>)}
@@ -50,11 +191,11 @@ export function GoalsScreen({ goals, setGoals }: { goals: Goal[]; setGoals: Disp
 
     <div className="goal-list">
       {visible.map((goal) => <article className={`goal-card ${goal.completed ? "completed" : ""}`} key={goal.id}>
-        <div className="goal-card-head"><span>{periodLabels[goal.period]} · до {new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" }).format(new Date(`${goal.deadline}T12:00:00`))}</span><div className="goal-card-actions"><button className="goal-delete" onClick={() => removeGoal(goal)} aria-label={`Удалить цель «${goal.title}»`}><Icon name="close" size={16} /></button><button className="goal-complete" onClick={() => setGoals((items) => items.map((item) => item.id === goal.id ? { ...item, completed: !item.completed, progress: item.completed ? item.progress : 100 } : item))} aria-label={goal.completed ? "Вернуть цель в работу" : "Завершить цель"}><Icon name="check" size={16} /></button></div></div>
+        <div className="goal-card-head"><span>{periodLabels[goal.period]} · до {new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" }).format(new Date(`${goal.deadline}T12:00:00`))}</span><div className="goal-card-actions"><button className="goal-delete" onClick={() => removeGoal(goal)} aria-label={`Удалить цель «${goal.title}»`}><Icon name="close" size={16} /></button><button className="goal-complete" onClick={() => setGoals((items) => items.map((item) => item.id === goal.id ? { ...item, completed: !item.completed, progress: item.completed ? item.progress : 100, updatedAt: todayIso() } : item))} aria-label={goal.completed ? "Вернуть цель в работу" : "Завершить цель"}><Icon name="check" size={16} /></button></div></div>
         <h2>{goal.title}</h2>
         {goal.description && <p>{goal.description}</p>}
         <div className="goal-progress-copy"><span>Прогресс</span><strong>{goal.progress}%</strong></div>
-        <input aria-label={`Прогресс цели «${goal.title}»`} type="range" min="0" max="100" step="5" value={goal.progress} onChange={(e) => setGoals((items) => items.map((item) => item.id === goal.id ? { ...item, progress: Number(e.target.value), completed: Number(e.target.value) === 100 } : item))} style={{ "--goal-progress": `${goal.progress}%` } as CSSProperties} />
+        <input aria-label={`Прогресс цели «${goal.title}»`} type="range" min="0" max="100" step="5" value={goal.progress} onChange={(e) => setGoals((items) => items.map((item) => item.id === goal.id ? { ...item, progress: Number(e.target.value), completed: Number(e.target.value) === 100, updatedAt: todayIso() } : item))} style={{ "--goal-progress": `${goal.progress}%` } as CSSProperties} />
       </article>)}
       {!visible.length && <div className="empty-card"><Icon name="target" size={30} /><h3>Здесь появится твоя цель</h3><p>Сформулируй один понятный ориентир.</p></div>}
     </div>
@@ -71,7 +212,7 @@ export function GoalsScreen({ goals, setGoals }: { goals: Goal[]; setGoals: Disp
   </section>;
 }
 
-export function JournalScreen({ entries, setEntries, apiConfig }: { entries: JournalEntry[]; setEntries: Dispatch<SetStateAction<JournalEntry[]>>; apiConfig: PlannerApiConfig }) {
+export function JournalScreen({ entries, setEntries, apiConfig, sectionTabs }: { entries: JournalEntry[]; setEntries: Dispatch<SetStateAction<JournalEntry[]>>; apiConfig: PlannerApiConfig; sectionTabs?: ReactNode }) {
   const [mode, setMode] = useState<"write" | "history">("write");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -96,7 +237,7 @@ export function JournalScreen({ entries, setEntries, apiConfig }: { entries: Jou
     draftsRef.current = drafts;
   }, [drafts]);
 
-  const syncEnabled = apiConfig.enabled && Boolean(apiConfig.token) && Boolean(apiConfig.baseUrl);
+  const syncEnabled = apiConfig.enabled;
   const moods = ["Спокойно", "Энергично", "Тяжело", "Радостно"];
   const filtered = entries.filter((entry) => entrySearchText(entry).toLowerCase().includes(query.toLowerCase()));
 
@@ -304,7 +445,7 @@ export function JournalScreen({ entries, setEntries, apiConfig }: { entries: Jou
       return;
     }
     if (drafts.some((draft) => !draft.mediaId)) {
-      setDraftError("Не все записи попали на сервер. Включи синхронизацию и повтори загрузку или убери черновики.");
+      setDraftError("Не все записи попали на сервер. Дождись подключения Workazy Cloud и повтори загрузку или убери черновики.");
       return;
     }
 
@@ -377,7 +518,7 @@ export function JournalScreen({ entries, setEntries, apiConfig }: { entries: Jou
 
   async function runFullBackup() {
     if (!syncEnabled) {
-      setBackupError("Полный бэкап доступен при включённой синхронизации: медиафайлы живут на сервере.");
+      setBackupError("Полный бэкап станет доступен после подключения Workazy Cloud: медиафайлы живут на сервере.");
       return;
     }
     setBackupBusy(true);
@@ -412,6 +553,7 @@ export function JournalScreen({ entries, setEntries, apiConfig }: { entries: Jou
   return <section className="screen secondary-screen journal-screen" aria-labelledby="journal-title">
     <div className="eyebrow"><span className="status-dot" /> Личное пространство</div>
     <div className="secondary-title"><div><h1 id="journal-title">Дневник</h1><p>Место, где не нужно быть продуктивным.</p></div><button className="icon-button" onClick={() => setExportOpen(true)} aria-label="Экспорт дневника"><Icon name="download" size={19} /></button></div>
+    {sectionTabs}
     <div className="segmented-tabs journal-tabs"><button className={mode === "write" ? "active" : ""} onClick={() => setMode("write")}>Новая запись</button><button className={mode === "history" ? "active" : ""} onClick={() => setMode("history")}>История <span>{entries.length}</span></button></div>
 
     {mode === "write" ? <div className="journal-editor">
@@ -422,7 +564,7 @@ export function JournalScreen({ entries, setEntries, apiConfig }: { entries: Jou
         <button className="ghost-action" onClick={() => startRecorder("audio")} disabled={recorderKind !== null}><Icon name="mic" size={16} />Голосовая запись</button>
         <button className="ghost-action" onClick={() => startRecorder("video")} disabled={recorderKind !== null}><Icon name="video" size={16} />Видео</button>
       </div>
-      {!syncEnabled && <p className="media-hint">Голос и видео живут в облаке дневника. Включи синхронизацию в настройках, чтобы записывать их.</p>}
+      {!syncEnabled && <p className="media-hint">Workazy Cloud переподключается. После подключения голос или видео загрузятся автоматически.</p>}
       {draftError && <p className="media-error" role="alert">{draftError}</p>}
       {recorderKind && <MediaRecorderPanel kind={recorderKind} onDone={handleRecordingDone} onCancel={() => setRecorderKind(null)} />}
       {!!drafts.length && <div className="draft-list">{drafts.map((draft) => <MediaDraftCard key={draft.key} draft={draft} onRemove={() => void removeDraft(draft)} onRetry={() => void retryDraft(draft)} />)}</div>}
@@ -479,7 +621,7 @@ function localIso(year: number, month: number, day: number) {
   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-export function CalendarScreen({ tasks, events, setEvents, selectedDate, setSelectedDate }: { tasks: PlanTask[]; events: CalendarEvent[]; setEvents: Dispatch<SetStateAction<CalendarEvent[]>>; selectedDate: string; setSelectedDate: Dispatch<SetStateAction<string>> }) {
+export function CalendarScreen({ events, setEvents, selectedDate, setSelectedDate }: { events: CalendarEvent[]; setEvents: Dispatch<SetStateAction<CalendarEvent[]>>; selectedDate: string; setSelectedDate: Dispatch<SetStateAction<string>> }) {
   const [viewDate, setViewDate] = useState(() => new Date());
   const [addOpen, setAddOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -491,7 +633,6 @@ export function CalendarScreen({ tasks, events, setEvents, selectedDate, setSele
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const start = (new Date(year, month, 1).getDay() + 6) % 7;
   const cells = [...Array(start).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
-  const selectedTasks = tasks.filter((task) => task.date === selectedDate);
   const selectedEvents = events.filter((event) => event.date === selectedDate);
 
   function addEvent(event: FormEvent) {
@@ -516,7 +657,7 @@ export function CalendarScreen({ tasks, events, setEvents, selectedDate, setSele
       <div className="calendar-grid">{cells.map((day, index) => {
         if (!day) return <span className="blank-day" key={`blank-${index}`} />;
         const iso = localIso(year, month, day);
-        const hasItems = tasks.some((task) => task.date === iso) || events.some((event) => event.date === iso);
+        const hasItems = events.some((event) => event.date === iso);
         return <button key={iso} className={`${iso === selectedDate ? "selected" : ""} ${iso === todayIso() ? "today" : ""}`} onClick={() => setSelectedDate(iso)}><span>{day}</span>{hasItems && <i />}</button>;
       })}</div>
     </section>
@@ -524,8 +665,7 @@ export function CalendarScreen({ tasks, events, setEvents, selectedDate, setSele
     <div className="selected-day-head"><div><span>Выбранный день</span><h2>{displayDate(selectedDate)}</h2></div><button onClick={() => setAddOpen(true)}>+ Событие</button></div>
     <div className="day-agenda">
       {selectedEvents.map((event) => <button type="button" className="agenda-item event agenda-event-delete" key={event.id} onClick={() => removeEvent(event)} aria-label={`Удалить событие «${event.title}»`}><div className="agenda-time">{event.time || "—"}</div><div><h3>{event.title}</h3><p>{event.reminder || "Без напоминания"}</p></div><span className="agenda-delete" aria-hidden="true"><Icon name="close" size={15} /></span></button>)}
-      {selectedTasks.map((task) => <article className={`agenda-item task ${task.completed ? "done" : ""}`} key={task.id}><div className="agenda-time"><Icon name="check" size={16} /></div><div><h3>{task.title}</h3><p>Пункт плана</p></div><span className="agenda-dot" /></article>)}
-      {!selectedEvents.length && !selectedTasks.length && <div className="empty-card mini-empty"><Icon name="calendar" size={24} /><h3>Ничего не запланировано</h3><p>Можно оставить этот день свободным.</p></div>}
+      {!selectedEvents.length && <div className="empty-card mini-empty"><Icon name="calendar" size={24} /><h3>Событий нет</h3><p>Можно оставить этот день свободным.</p></div>}
     </div>
 
     {addOpen && <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && setAddOpen(false)}><form className="compact-sheet" onSubmit={addEvent}>
@@ -539,25 +679,134 @@ export function CalendarScreen({ tasks, events, setEvents, selectedDate, setSele
   </section>;
 }
 
+type ProgressPeriod = "day" | "week" | "month" | "year";
+type ProgressSection = "tasks" | "days" | "entries" | "goals";
+
+const progressPeriodLabels: Record<ProgressPeriod, string> = { day: "День", week: "Неделя", month: "Месяц", year: "Год" };
+
+function dateFromIso(iso: string) {
+  return new Date(`${iso}T12:00:00`);
+}
+
+function shiftProgressDate(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function progressPeriodBounds(period: ProgressPeriod) {
+  const today = dateFromIso(todayIso());
+  const start = new Date(today);
+  const end = new Date(today);
+  if (period === "week") {
+    const mondayOffset = (today.getDay() + 6) % 7;
+    start.setDate(today.getDate() - mondayOffset);
+    end.setDate(start.getDate() + 6);
+  } else if (period === "month") {
+    start.setDate(1);
+    end.setMonth(today.getMonth() + 1, 0);
+  } else if (period === "year") {
+    start.setMonth(0, 1);
+    end.setMonth(11, 31);
+  }
+  return { start: localDateIso(start), end: localDateIso(end) };
+}
+
+function isInProgressPeriod(date: string, start: string, end: string) {
+  return date >= start && date <= end;
+}
+
+function shortProgressDate(iso: string) {
+  return new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" }).format(dateFromIso(iso));
+}
+
+function progressPeriodCaption(period: ProgressPeriod, start: string, end: string) {
+  if (period === "day") return new Intl.DateTimeFormat("ru-RU", { weekday: "long", day: "numeric", month: "long" }).format(dateFromIso(start));
+  if (period === "week") return `${shortProgressDate(start)} — ${shortProgressDate(end)}`;
+  if (period === "month") return new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(dateFromIso(start));
+  return new Intl.DateTimeFormat("ru-RU", { year: "numeric" }).format(dateFromIso(start));
+}
+
+function goalProgressDate(goal: Goal) {
+  const updated = goal.updatedAt?.slice(0, 10);
+  return goal.completed && updated && /^\d{4}-\d{2}-\d{2}$/.test(updated) ? updated : goal.deadline;
+}
+
+function buildProgressBuckets(period: ProgressPeriod, start: string, end: string, tasks: PlanTask[]) {
+  const ranges: { start: string; end: string; label: string }[] = [];
+  if (period === "day") {
+    ranges.push({ start, end, label: "Сегодня" });
+  } else if (period === "week") {
+    const labels = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+    for (let index = 0; index < 7; index += 1) {
+      const date = localDateIso(shiftProgressDate(dateFromIso(start), index));
+      ranges.push({ start: date, end: date, label: labels[index] });
+    }
+  } else if (period === "month") {
+    let cursor = dateFromIso(start);
+    while (localDateIso(cursor) <= end) {
+      const bucketStart = localDateIso(cursor);
+      const bucketEnd = localDateIso(new Date(cursor.getFullYear(), cursor.getMonth(), Math.min(cursor.getDate() + 6, dateFromIso(end).getDate()), 12));
+      ranges.push({ start: bucketStart, end: bucketEnd, label: `${cursor.getDate()}–${dateFromIso(bucketEnd).getDate()}` });
+      cursor = shiftProgressDate(dateFromIso(bucketEnd), 1);
+    }
+  } else {
+    const monthLabels = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"];
+    const year = dateFromIso(start).getFullYear();
+    for (let month = 0; month < 12; month += 1) {
+      ranges.push({ start: localDateIso(new Date(year, month, 1, 12)), end: localDateIso(new Date(year, month + 1, 0, 12)), label: monthLabels[month] });
+    }
+  }
+  return ranges.map((range) => {
+    const bucketTasks = tasks.filter((task) => isInProgressPeriod(task.date, range.start, range.end));
+    const done = bucketTasks.filter((task) => task.completed).length;
+    return { ...range, percent: bucketTasks.length ? Math.round(done / bucketTasks.length * 100) : 0, total: bucketTasks.length };
+  });
+}
+
 export function ProgressScreen({ tasks, goals, entries }: { tasks: PlanTask[]; goals: Goal[]; entries: JournalEntry[] }) {
-  const weekTasks = tasks.slice(-20);
-  const completed = weekTasks.filter((task) => task.completed).length;
-  const percent = weekTasks.length ? Math.round(completed / weekTasks.length * 100) : 0;
-  const planDays = new Set(tasks.map((task) => task.date)).size;
-  const doneGoals = goals.filter((goal) => goal.completed).length;
-  const bars = useMemo(() => [42, 68, 54, 86, 61, 72, Math.max(percent, 12)], [percent]);
+  const [period, setPeriod] = useState<ProgressPeriod>("week");
+  const [openSection, setOpenSection] = useState<ProgressSection | null>("tasks");
+  const { start, end } = progressPeriodBounds(period);
+  const periodTasks = tasks.filter((task) => isInProgressPeriod(task.date, start, end)).sort((a, b) => b.date.localeCompare(a.date));
+  const periodEntries = entries.filter((entry) => isInProgressPeriod(entry.date, start, end)).sort((a, b) => b.date.localeCompare(a.date));
+  const periodGoals = goals.filter((goal) => isInProgressPeriod(goalProgressDate(goal), start, end)).sort((a, b) => goalProgressDate(b).localeCompare(goalProgressDate(a)));
+  const completedTasks = periodTasks.filter((task) => task.completed).length;
+  const percent = periodTasks.length ? Math.round(completedTasks / periodTasks.length * 100) : 0;
+  const planDays = [...new Set(periodTasks.map((task) => task.date))].sort((a, b) => b.localeCompare(a));
+  const completedGoals = periodGoals.filter((goal) => goal.completed).length;
+  const missedGoals = periodGoals.filter((goal) => !goal.completed && goal.deadline < todayIso()).length;
+  const buckets = buildProgressBuckets(period, start, end, periodTasks);
+
+  function toggleSection(section: ProgressSection) {
+    setOpenSection((current) => current === section ? null : section);
+  }
 
   return <section className="screen secondary-screen progress-screen" aria-labelledby="progress-title">
     <div className="eyebrow"><span className="status-dot" /> Без оценок — только факты</div>
-    <div className="secondary-title"><div><h1 id="progress-title">Прогресс</h1><p>Посмотри, сколько уже сделано.</p></div><div className="streak"><strong>6</strong><span>дней</span></div></div>
-    <section className="week-score"><span>Эта неделя</span><div><strong>{percent}%</strong><p>{completed} выполненных задач</p></div><div className="week-chart" aria-label="Динамика выполнения по дням">{bars.map((height, index) => <span key={index} className={index === bars.length - 1 ? "current" : ""} style={{ height: `${height}%` }}><i>{["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][index]}</i></span>)}</div></section>
-    <div className="stats-grid">
-      <article><Icon name="check" size={20} /><strong>{completed}</strong><span>задач выполнено</span></article>
-      <article><Icon name="calendar" size={20} /><strong>{planDays}</strong><span>дней с планом</span></article>
-      <article><Icon name="book" size={20} /><strong>{entries.length}</strong><span>записей дневника</span></article>
-      <article><Icon name="target" size={20} /><strong>{doneGoals}</strong><span>целей достигнуто</span></article>
+    <div className="secondary-title"><div><h1 id="progress-title">Прогресс</h1><p>Открывай разделы и смотри, что сделано.</p></div><div className="streak"><strong>{planDays.length}</strong><span>дней</span></div></div>
+
+    <div className="segmented-tabs progress-period-tabs" role="tablist" aria-label="Период прогресса">
+      {(Object.keys(progressPeriodLabels) as ProgressPeriod[]).map((value) => <button key={value} role="tab" aria-selected={period === value} className={period === value ? "active" : ""} onClick={() => setPeriod(value)}>{progressPeriodLabels[value]}</button>)}
     </div>
-    <section className="reflection-card"><Icon name="spark" size={22} /><div><span>Наблюдение</span><p>Больше всего задач закрывается в дни, когда план содержит не больше пяти пунктов.</p></div></section>
+
+    <section className="week-score"><span>{progressPeriodCaption(period, start, end)}</span><div><strong>{percent}%</strong><p>{completedTasks} из {periodTasks.length} задач выполнено</p></div><div className={`week-chart progress-chart period-${period}`} aria-label="Динамика выполнения">{buckets.map((bucket) => <span key={bucket.start} className={bucket.start <= todayIso() && bucket.end >= todayIso() ? "current" : ""} style={{ height: `${bucket.total ? Math.max(bucket.percent, 10) : 6}%` }} aria-label={`${bucket.label}: ${bucket.percent}%`}><i>{bucket.label}</i></span>)}</div></section>
+
+    <div className="stats-grid progress-stats">
+      <button type="button" className={openSection === "tasks" ? "active" : ""} onClick={() => toggleSection("tasks")} aria-expanded={openSection === "tasks"}><Icon name="check" size={20} /><strong>{completedTasks}</strong><span>задач выполнено из {periodTasks.length}</span><Icon name="arrow" size={15} /></button>
+      <button type="button" className={openSection === "days" ? "active" : ""} onClick={() => toggleSection("days")} aria-expanded={openSection === "days"}><Icon name="calendar" size={20} /><strong>{planDays.length}</strong><span>дней с планом</span><Icon name="arrow" size={15} /></button>
+      <button type="button" className={openSection === "entries" ? "active" : ""} onClick={() => toggleSection("entries")} aria-expanded={openSection === "entries"}><Icon name="book" size={20} /><strong>{periodEntries.length}</strong><span>записей дневника</span><Icon name="arrow" size={15} /></button>
+      <button type="button" className={openSection === "goals" ? "active" : ""} onClick={() => toggleSection("goals")} aria-expanded={openSection === "goals"}><Icon name="target" size={20} /><strong>{completedGoals}</strong><span>{missedGoals ? `${missedGoals} не выполнено` : "целей достигнуто"}</span><Icon name="arrow" size={15} /></button>
+    </div>
+
+    {openSection && <section className="progress-details" aria-live="polite">
+      <div className="progress-details-head"><span>{openSection === "tasks" ? "Задачи" : openSection === "days" ? "Дни с планом" : openSection === "entries" ? "Записи дневника" : "Цели"}</span><strong>{progressPeriodCaption(period, start, end)}</strong></div>
+      {openSection === "tasks" && <div className="progress-detail-list">{periodTasks.map((task) => <article key={task.id}><span className={`progress-result ${task.completed ? "done" : "pending"}`}>{task.completed ? "Выполнено" : "Не выполнено"}</span><h3>{task.title}</h3><p>{shortProgressDate(task.date)}</p></article>)}</div>}
+      {openSection === "days" && <div className="progress-detail-list">{planDays.map((date) => { const dayTasks = periodTasks.filter((task) => task.date === date); const done = dayTasks.filter((task) => task.completed).length; return <article key={date}><span className="progress-result">{done}/{dayTasks.length}</span><h3>{displayDate(date)}</h3><p>{done} выполнено · {dayTasks.length - done} не выполнено</p></article>; })}</div>}
+      {openSection === "entries" && <div className="progress-detail-list">{periodEntries.map((entry) => <article key={entry.id}><span className="progress-result">{shortProgressDate(entry.date)}</span><h3>{entry.title?.trim() || "Запись дневника"}</h3><p>{(entry.body ?? "").trim() || (entry.media?.length ? "Аудио или видеозапись" : "Без текста")}</p></article>)}</div>}
+      {openSection === "goals" && <div className="progress-detail-list">{periodGoals.map((goal) => { const missed = !goal.completed && goal.deadline < todayIso(); return <article key={goal.id}><span className={`progress-result ${goal.completed ? "done" : missed ? "missed" : "pending"}`}>{goal.completed ? "Выполнена" : missed ? "Не выполнена" : "В работе"}</span><h3>{goal.title}</h3><p>{goal.completed ? `Завершена ${shortProgressDate(goalProgressDate(goal))}` : `Срок ${shortProgressDate(goal.deadline)}`} · {goal.progress}%</p></article>; })}</div>}
+      {((openSection === "tasks" && !periodTasks.length) || (openSection === "days" && !planDays.length) || (openSection === "entries" && !periodEntries.length) || (openSection === "goals" && !periodGoals.length)) && <div className="mini-empty"><p>За этот период пока ничего нет.</p></div>}
+    </section>}
     <p className="no-ai-note">Статистика считается только по твоим данным — без AI-анализа.</p>
   </section>;
 }
@@ -566,7 +815,7 @@ const ideaCategoryLabels: Record<IdeaCategory, string> = { thought: "Мысль"
 
 const ideaStatusLabels: Record<IdeaStatus, string> = { new: "Новая", thinking: "Думаю", plan: "В план", done: "Сделано", archive: "Архив" };
 
-export function IdeasScreen({ ideas, setIdeas }: { ideas: Idea[]; setIdeas: Dispatch<SetStateAction<Idea[]>> }) {
+export function IdeasScreen({ ideas, setIdeas, sectionTabs }: { ideas: Idea[]; setIdeas: Dispatch<SetStateAction<Idea[]>>; sectionTabs?: ReactNode }) {
   const [categoryFilter, setCategoryFilter] = useState<IdeaCategory | "all">("all");
   const [statusFilter, setStatusFilter] = useState<IdeaStatus | "all">("all");
   const [addOpen, setAddOpen] = useState(false);
@@ -588,10 +837,11 @@ export function IdeasScreen({ ideas, setIdeas }: { ideas: Idea[]; setIdeas: Disp
   return <section className="screen secondary-screen" aria-labelledby="ideas-title">
     <div className="eyebrow"><span className="status-dot" /> Копилка идей</div>
     <div className="secondary-title"><div><h1 id="ideas-title">Идеи</h1><p>Мысли, хочухи и проекты — всё в одном месте.</p></div><button className="round-add" onClick={() => setAddOpen(true)} aria-label="Добавить идею"><Icon name="plus" /></button></div>
+    {sectionTabs}
 
     <div className="mood-row idea-filters"><span>Категория</span><div>
       <button className={categoryFilter === "all" ? "active" : ""} onClick={() => setCategoryFilter("all")}>Все</button>
-      {(Object.keys(ideaCategoryLabels) as IdeaCategory[]).map((value) => <button key={value} className={categoryFilter === value ? "active" : ""} onClick={() => setCategoryFilter(categoryFilter === value ? "all" : value)}>{ideaCategoryLabels[value]}</button>)}
+      {(Object.keys(ideaCategoryLabels) as IdeaCategory[]).map((value) => <button key={value} className={`category-${value} ${categoryFilter === value ? "active" : ""}`} onClick={() => setCategoryFilter(categoryFilter === value ? "all" : value)}>{ideaCategoryLabels[value]}</button>)}
     </div></div>
 
     <div className="mood-row idea-filters"><span>Статус</span><div>
@@ -600,7 +850,7 @@ export function IdeasScreen({ ideas, setIdeas }: { ideas: Idea[]; setIdeas: Disp
     </div></div>
 
     <div className="idea-list">
-      {visible.map((idea) => <article className="idea-card" key={idea.id}>
+      {visible.map((idea) => <article className={`idea-card category-${idea.category}`} key={idea.id}>
         <div className="idea-card-head"><span>{ideaCategoryLabels[idea.category]}</span><button onClick={() => setIdeas((items) => items.filter((item) => item.id !== idea.id))} aria-label={`Удалить идею «${idea.title}»`}><Icon name="close" size={16} /></button></div>
         <h2>{idea.title}</h2>
         {idea.description && <p>{idea.description}</p>}
@@ -629,9 +879,6 @@ export function SettingsSheet({ apiConfig, onSaveApiConfig, onClose }: {
   onClose: () => void;
 }) {
   const [pushEnabled, setPushEnabled] = useState(false);
-  const [baseUrl, setBaseUrl] = useState(apiConfig.baseUrl);
-  const [token, setToken] = useState(apiConfig.token);
-  const [syncEnabled, setSyncEnabled] = useState(apiConfig.enabled);
   const [syncStatus, setSyncStatus] = useState("");
   const [syncSaving, setSyncSaving] = useState(false);
   const [telegramStatus, setTelegramStatus] = useState<{
@@ -667,10 +914,10 @@ export function SettingsSheet({ apiConfig, onSaveApiConfig, onClose }: {
 
   async function saveServerConfig() {
     setSyncSaving(true);
-    setSyncStatus(syncEnabled ? "Проверка..." : "Сохранение...");
+    setSyncStatus("Проверка...");
     try {
-      await onSaveApiConfig({ baseUrl: baseUrl.trim(), token: token.trim(), enabled: syncEnabled });
-      setSyncStatus(syncEnabled ? "Подключено" : "Сохранено");
+      await onSaveApiConfig(defaultApiConfig);
+      setSyncStatus("Подключено");
     } catch (error) {
       setSyncStatus(error instanceof Error ? error.message : "Не удалось подключиться");
     } finally {
@@ -688,14 +935,12 @@ export function SettingsSheet({ apiConfig, onSaveApiConfig, onClose }: {
     </div>
     <div className="editor-head sync-head"><div><span>Сервер</span><h2>Синхронизация</h2></div></div>
     <div className="sync-fields">
-      <label className="field"><span>Адрес сервера</span><input value={baseUrl} onChange={(e) => { setBaseUrl(e.target.value); setSyncStatus(""); }} placeholder="https://workazy.example.com" autoComplete="off" /></label>
-      <label className="field"><span>API-токен</span><input value={token} onChange={(e) => { setToken(e.target.value); setSyncStatus(""); }} placeholder="Bearer-токен Workazy" type="password" autoComplete="off" /></label>
       <div className="sync-row">
-        <div><h3>Включить синхронизацию</h3><p>Данные сохраняются локально и копируются на сервер</p></div>
-        <label className="toggle"><input type="checkbox" checked={syncEnabled} onChange={(e) => { setSyncEnabled(e.target.checked); setSyncStatus(""); }} /><span /></label>
+        <div><h3>Workazy Cloud</h3><p>{apiConfig.enabled ? "Подключено автоматически · данные хранятся на сервере" : "Переподключение…"}</p></div>
+        <span className={`sync-indicator ${apiConfig.enabled ? "online" : ""}`} aria-label={apiConfig.enabled ? "Синхронизация подключена" : "Синхронизация переподключается"} />
       </div>
       <div className="sync-actions">
-        <button onClick={saveServerConfig} disabled={syncSaving}>{syncSaving ? "Проверка" : "Сохранить"}</button>
+        <button onClick={saveServerConfig} disabled={syncSaving}>{syncSaving ? "Проверка" : "Проверить связь"}</button>
         {syncStatus && <span>{syncStatus}</span>}
       </div>
     </div>

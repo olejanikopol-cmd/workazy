@@ -40,18 +40,44 @@ test("Custom GPT OpenAPI stays focused and below the 30-operation limit", async 
   assert.equal(gptSpec.servers[0].url, "https://personal-planner.uchepir.chatgpt.site");
   assert.deepEqual(gptSpec.security, [{ BearerAuth: [] }]);
   assert.equal(gptSpec.components.securitySchemes.BearerAuth.scheme, "bearer");
+  assert.ok(gptSpec.paths["/api/v1/assignments"]);
+  assert.equal(gptSpec.paths["/api/v1/tasks"], undefined, "Custom GPT must not write assignments into the daily plan");
   assert.doesNotMatch(
     operations.map((operation) => `${operation.path} ${operation.operationId}`).join("\n"),
     /media|upload|file-url|reminder|health|storage/i,
   );
 });
 
-test("state replacement uses an atomic D1 batch and derives task order from the array", async () => {
+test("legacy Custom GPT task routes are safe aliases for assignments", async () => {
+  const list = await readFile(new URL("app/api/v1/tasks/route.ts", root), "utf8");
+  const item = await readFile(new URL("app/api/v1/tasks/[id]/route.ts", root), "utf8");
+  const complete = await readFile(new URL("app/api/v1/tasks/[id]/complete/route.ts", root), "utf8");
+  for (const source of [list, item, complete]) {
+    assert.match(source, /assignments/);
+    assert.doesNotMatch(source, /from\(tasks\)|insert\(tasks\)|update\(tasks\)|delete\(tasks\)/);
+  }
+  assert.match(list, /newId\("assignment"\)/);
+  assert.doesNotMatch(list, /body\.date|todayDate/);
+});
+
+test("the failed GPT attempts are deduplicated into one assignment", async () => {
+  const source = await readFile(new URL("lib/legacy-assignments.ts", root), "utf8");
+  assert.match(source, /task-1787803987213-sc2cw/);
+  assert.match(source, /task-1787804044422-hbf3k/);
+  assert.match(source, /task-1787804090419-h83vh/);
+  assert.match(source, /db\.insert\(assignments\)/);
+  assert.match(source, /db\.delete\(tasks\)/);
+  assert.match(source, /await db\.batch\(/);
+});
+
+test("state replacement keeps assignments separate and uses an atomic D1 batch", async () => {
   const source = await readFile(new URL("app/api/v1/state/route.ts", root), "utf8");
   assert.match(source, /await db\.batch\(/);
   assert.doesNotMatch(source, /db\.transaction\(/);
   assert.match(source, /position: index/);
   assert.match(source, /chunks\(taskRows, 14\)/);
+  assert.match(source, /db\.delete\(assignments\)/);
+  assert.match(source, /db\.insert\(assignments\)/);
 });
 
 test("deploy packaging includes the generated migration directory", async () => {
@@ -59,12 +85,15 @@ test("deploy packaging includes the generated migration directory", async () => 
   const build = await readFile(new URL("scripts/build-verified.sh", root), "utf8");
   const verify = await readFile(new URL("scripts/verify-sites-artifact.mjs", root), "utf8");
   const migration = await readFile(new URL("db/migrations/0000_wandering_scarlet_spider.sql", root), "utf8");
+  const assignmentMigration = await readFile(new URL("db/migrations/0002_opposite_kitty_pryde.sql", root), "utf8");
   assert.match(plugin, /resolve\(root, "db", "migrations"\)/);
   assert.match(build, /verify-sites-artifact\.mjs/);
   assert.match(verify, /0001_hesitant_jazinda\.sql/);
+  assert.match(verify, /0002_opposite_kitty_pryde\.sql/);
   assert.match(verify, /hosting\.d1 !== "DB" \|\| hosting\.r2 !== "MEDIA"/);
   assert.match(migration, /CREATE TABLE `tasks`/);
   assert.match(migration, /CREATE TABLE `reminder_logs`/);
+  assert.match(assignmentMigration, /CREATE TABLE `assignments`/);
 });
 
 test("API validators reject impossible dates and ambiguous reminder times", async () => {
@@ -107,5 +136,44 @@ test("sync is adopted before an enabled config can arm automatic uploads", async
   const updateStart = source.indexOf("async function updateApiConfig");
   const updateEnd = source.indexOf("useEffect(() =>", updateStart);
   const updateSource = source.slice(updateStart, updateEnd);
-  assert.ok(updateSource.indexOf("await adoptServerState(next)") < updateSource.indexOf("setApiConfig(next)"));
+  assert.ok(updateSource.indexOf("await adoptServerState(normalized)") < updateSource.indexOf("setApiConfig(normalized)"));
+});
+
+test("planner sync is automatic, durable during page exit, and conflict-aware", async () => {
+  const api = await readFile(new URL("lib/planner-api.ts", root), "utf8");
+  const app = await readFile(new URL("app/planner-app.tsx", root), "utf8");
+  const route = await readFile(new URL("app/api/v1/state/route.ts", root), "utf8");
+
+  assert.match(api, /enabled: true/);
+  assert.match(api, /keepalive: true/);
+  assert.match(api, /fetchSyncWithRetry/);
+  assert.match(api, /mergePlannerStates/);
+  assert.match(api, /syncUpdatedAt/);
+  assert.match(app, /pagehide/);
+  assert.match(app, /visibilitychange/);
+  assert.match(route, /planner-sync-updated-at/);
+  assert.match(route, /onConflictDoUpdate/);
+});
+
+test("same-origin owner authentication removes the manual token setup", async () => {
+  const auth = await readFile(new URL("lib/api.ts", root), "utf8");
+  const settings = await readFile(new URL("app/secondary-screens.tsx", root), "utf8");
+
+  assert.match(auth, /oai-authenticated-user-email/);
+  assert.match(auth, /WORKAZY_OWNER_EMAIL/);
+  assert.match(settings, /Workazy Cloud/);
+  assert.match(settings, /Подключено автоматически/);
+  assert.doesNotMatch(settings, /Адрес сервера|API-токен|Включить синхронизацию/);
+});
+
+test("same-origin cloud writes do not wait for legacy token or server fields", async () => {
+  const screens = await readFile(new URL("app/secondary-screens.tsx", root), "utf8");
+
+  assert.equal(
+    screens.match(/const syncEnabled = apiConfig\.enabled;/g)?.length,
+    2,
+    "задания и медиа используют автоматическое подключение Workazy Cloud",
+  );
+  assert.doesNotMatch(screens, /Boolean\(apiConfig\.(?:token|baseUrl)\)/);
+  assert.doesNotMatch(screens, /Ждёт включения синхронизации|Включи синхронизацию/);
 });

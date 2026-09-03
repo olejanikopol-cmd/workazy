@@ -84,12 +84,16 @@ curl -X POST -H "Authorization: Bearer $WORKAZY_API_TOKEN" "$WORKAZY_BASE_URL/ap
 curl -H "Authorization: Bearer $WORKAZY_API_TOKEN" "$WORKAZY_BASE_URL/api/v1/journal/media/<media-id>/file-url"
 ```
 
-## Telegram-бот: почасовые напоминания
+## Telegram-бот: напоминания по времени и почасовые сводки
 
-Endpoint работает в том же воркере и ходит в ту же базу. GitHub Actions раз в
-час вызывает `POST /api/v1/reminders/tick`, а воркер отправляет сводку дня в
-Telegram — и только если картина дня изменилась с последней отправки
-(анти-спам: хэш состава хранится в `reminder_logs`, `entityType="digest"`).
+Endpoint работает в том же воркере и ходит в ту же базу. Защищённый GitHub
+Actions job проверяет сроки каждые пять минут, а независимый почасовой запуск
+повторяет последний job как резерв. Воркер отправляет события с учётом выбранного
+интервала (например, за 30 минут), а долги и покупки — в указанное в форме время
+дня срока (по умолчанию 09:00, часовой пояс `Europe/Kyiv`). Почасовая сводка
+по-прежнему приходит не чаще одного раза в часовом слоте. Атомарные lock-записи
+хранятся в `settings`, результаты — в `reminder_logs`; повторный вызов не создаёт
+дубликат уведомления.
 
 1. Создайте бота у @BotFather и задайте в окружении хостинга секреты
    `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID`. Опубликованный токен необходимо
@@ -97,27 +101,28 @@ Telegram — и только если картина дня изменилась
 2. Напишите боту любое сообщение и узнайте свой чат:
    `curl "https://api.telegram.org/bot<ТОКЕН>/getUpdates"` → `message.chat.id`
    → секрет `TELEGRAM_CHAT_ID`.
-3. Добавьте `WORKAZY_API_TOKEN` в GitHub → Settings → Secrets and variables →
-   Actions. Ежечасный workflow уже находится в
-   `.github/workflows/hourly-reminder.yml`:
+3. Защищённый OIDC-workflow находится в
+   `.github/workflows/hourly-reminder.yml` и не требует копировать API-токен в
+   GitHub. Расписание проверяет сроки каждые пять минут, а серверная блокировка
+   отсекает дубли:
 
 ```yaml
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "*/5 * * * *"
 jobs:
   reminder:
     runs-on: ubuntu-latest
     steps:
-      - run: >
-          curl -sf -X POST
-          -H "Authorization: Bearer ${{ secrets.WORKAZY_API_TOKEN }}"
-          https://personal-planner.uchepir.chatgpt.site/api/v1/reminders/tick
+      - uses: actions/github-script@v7
+        with:
+          script: return await core.getIDToken('workazy-hourly')
+      - run: curl -sf -X POST https://personal-planner.uchepir.chatgpt.site/api/telegram/hourly
 ```
 
 4. Проверка: `POST /api/v1/reminders/tick?force=true` присылает сообщение даже
-   без изменений; повторный вызов без `force` вернёт
-   `{ "ok": true, "data": { "sent": false, "reason": "no_changes" } }`.
+   при уже занятом часовом слоте; повторный вызов без `force` вернёт
+   `{ "ok": true, "data": { "sent": false, "reason": "already_sent_this_hour" } }`.
 
 Команды `/today`, `/tomorrow`, `/done`, `/add`, `/summary` — второй этап:
 добавится обработчик `POST /api/v1/telegram/webhook` в этом же воркере.

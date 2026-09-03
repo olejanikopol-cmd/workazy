@@ -16,6 +16,22 @@ export const tasks = sqliteTable(
   (table) => [index("idx_tasks_date").on(table.date)],
 );
 
+// Самостоятельные задания из Workazy GPT и ручного ввода.
+// Они не связаны с пунктами ежедневного плана из таблицы tasks.
+export const assignments = sqliteTable(
+  "assignments",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    description: text("description"),
+    dueDate: text("due_date"),
+    completed: integer("completed", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("idx_assignments_completed_due_date").on(table.completed, table.dueDate)],
+);
+
 export const goals = sqliteTable("goals", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
@@ -112,14 +128,15 @@ export const settings = sqliteTable("settings", {
 });
 
 // История напоминаний для Telegram-бота.
-// Связь с задачами/событиями полиморфная: по паре (entityType, entityId).
+// Связь с задачами, событиями и финансовыми обязательствами полиморфная:
+// по паре (entityType, entityId).
 // entityType "digest" + entityId "hourly" — почасовая сводка для анти-спама:
 // в payload хранится хэш состава задач/событий, уже отправленных в Telegram.
 export const reminderLogs = sqliteTable(
   "reminder_logs",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
-    entityType: text("entity_type", { enum: ["task", "event", "digest"] }).notNull(),
+    entityType: text("entity_type", { enum: ["task", "event", "obligation", "digest"] }).notNull(),
     entityId: text("entity_id").notNull(),
     dueAt: text("due_at").notNull(),
     sentAt: text("sent_at"),

@@ -1,4 +1,5 @@
-import type { CalendarEvent, Goal, Idea, JournalEntry, JournalMedia, PlanTask } from "./types";
+import type { Assignment, CalendarEvent, FinanceState, Goal, Idea, JournalEntry, JournalMedia, PlanTask } from "./types";
+import { normalizeFinanceState } from "./finance";
 import { loadPlannerState, savePlannerState } from "./planner-storage";
 import { MAX_AUDIO_SIZE_BYTES, MAX_VIDEO_SIZE_BYTES } from "./media-limits";
 import { mediaChunkBounds, retryMediaOperation } from "./media-upload";
@@ -7,15 +8,20 @@ export type PlannerApiConfig = { baseUrl: string; token: string; enabled: boolea
 
 export type PlannerSyncState = {
   tasks: PlanTask[];
+  assignments: Assignment[];
   goals: Goal[];
   entries: JournalEntry[];
   events: CalendarEvent[];
   ideas: Idea[];
+  finances: FinanceState;
+  syncUpdatedAt?: string;
 };
 
 const API_CONFIG_KEY = "workazy-api-config";
 
-export const defaultApiConfig: PlannerApiConfig = { baseUrl: "", token: "", enabled: false };
+// На опубликованном сайте синхронизация работает через подтверждённого
+// пользователя Sites. URL и секрет больше не должны жить в localStorage.
+export const defaultApiConfig: PlannerApiConfig = { baseUrl: "", token: "", enabled: true };
 
 export function loadApiConfig(): PlannerApiConfig {
   if (typeof window === "undefined") return defaultApiConfig;
@@ -26,7 +32,7 @@ export function loadApiConfig(): PlannerApiConfig {
     return {
       baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl.trim() : "",
       token: typeof parsed.token === "string" ? parsed.token.trim() : "",
-      enabled: parsed.enabled === true,
+      enabled: true,
     };
   } catch {
     return defaultApiConfig;
@@ -42,6 +48,7 @@ type ApiEnvelope<T> = { ok: boolean; data?: T; error?: string };
 
 function apiUrl(config: PlannerApiConfig, path: string): string {
   const baseUrl = config.baseUrl.replace(/\/+$/, "");
+  if (!baseUrl) return path;
   let parsed: URL;
   try {
     parsed = new URL(baseUrl);
@@ -52,6 +59,28 @@ function apiUrl(config: PlannerApiConfig, path: string): string {
     throw new Error("Адрес сервера должен начинаться с http:// или https://");
   }
   return `${baseUrl}${path}`;
+}
+
+function apiHeaders(config: PlannerApiConfig, headers: Record<string, string> = {}): Record<string, string> {
+  return config.token
+    ? { ...headers, Authorization: `Bearer ${config.token}` }
+    : headers;
+}
+
+async function fetchSyncWithRetry(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(input, init);
+      if (response.status < 500 || attempt === 2) return response;
+      await response.body?.cancel().catch(() => undefined);
+    } catch (error) {
+      lastError = error;
+      if (attempt === 2) throw error;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
+  }
+  throw lastError instanceof Error ? lastError : new Error("Синхронизация прервана");
 }
 
 async function readApiEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
@@ -67,7 +96,7 @@ async function readApiEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
 
 async function apiGet<T>(config: PlannerApiConfig, path: string): Promise<T> {
   const response = await fetch(apiUrl(config, path), {
-    headers: { Authorization: `Bearer ${config.token}` },
+    headers: apiHeaders(config),
   });
   const body = await readApiEnvelope<T>(response);
   if (!response.ok || !body.ok || body.data === undefined) {
@@ -84,22 +113,45 @@ export async function fetchServerState(config: PlannerApiConfig): Promise<Planne
   const state = await apiGet<Record<string, unknown>>(config, "/api/v1/state");
   return {
     tasks: asArray<PlanTask>(state.tasks),
+    assignments: asArray<Assignment>(state.assignments),
     goals: asArray<Goal>(state.goals),
     entries: asArray<JournalEntry>(state.entries),
     events: asArray<CalendarEvent>(state.events),
     ideas: asArray<Idea>(state.ideas),
+    finances: normalizeFinanceState(state.finances),
+    syncUpdatedAt: typeof state.syncUpdatedAt === "string" ? state.syncUpdatedAt : undefined,
   };
 }
 
 export function countPlannerItems(state: PlannerSyncState) {
-  return state.tasks.length + state.goals.length + state.entries.length + state.events.length + state.ideas.length;
+  const financeItems = state.finances.salarySchedules.length
+    + state.finances.expenses.length
+    + state.finances.obligations.length
+    + (state.finances.balance > 0 ? 1 : 0);
+  return state.tasks.length + state.assignments.length + state.goals.length + state.entries.length + state.events.length + state.ideas.length + financeItems;
 }
 
-export async function pushServerState(config: PlannerApiConfig, state: PlannerSyncState) {
-  const response = await fetch(apiUrl(config, "/api/v1/state"), {
+export async function pushServerState(
+  config: PlannerApiConfig,
+  state: PlannerSyncState,
+  { includeAssignments = false, clientUpdatedAt = new Date().toISOString() }: { includeAssignments?: boolean; clientUpdatedAt?: string } = {},
+) {
+  // Задания меняются через отдельные endpoints, чтобы обычное сохранение
+  // плана не затёрло задание, которое параллельно добавил Workazy GPT.
+  const payload = includeAssignments ? { ...state, syncUpdatedAt: clientUpdatedAt } : {
+    tasks: state.tasks,
+    goals: state.goals,
+    entries: state.entries,
+    events: state.events,
+    ideas: state.ideas,
+    finances: state.finances,
+    syncUpdatedAt: clientUpdatedAt,
+  };
+  const response = await fetchSyncWithRetry(apiUrl(config, "/api/v1/state"), {
     method: "PUT",
-    headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(state),
+    headers: apiHeaders(config, { "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+    keepalive: true,
   });
   const body = await readApiEnvelope<unknown>(response);
   if (!response.ok || !body.ok) {
@@ -107,26 +159,87 @@ export async function pushServerState(config: PlannerApiConfig, state: PlannerSy
   }
 }
 
+function mergeById<T extends { id: string }>(server: T[], local: T[], combine?: (serverItem: T, localItem: T) => T): T[] {
+  const merged = new Map(server.map((item) => [item.id, item]));
+  for (const item of local) {
+    const serverItem = merged.get(item.id);
+    merged.set(item.id, serverItem && combine ? combine(serverItem, item) : item);
+  }
+  return [...merged.values()];
+}
+
+function financeHasData(finances: FinanceState) {
+  return finances.balance > 0 || finances.salarySchedules.length > 0 || finances.expenses.length > 0 || finances.obligations.length > 0;
+}
+
+function preferredFinanceState(server: FinanceState, local: FinanceState): FinanceState {
+  if (!financeHasData(local)) return server;
+  if (!financeHasData(server)) return local;
+  if (local.updatedAt && server.updatedAt) return local.updatedAt > server.updatedAt ? local : server;
+  return local.updatedAt ? local : server;
+}
+
+/** Миграция старого localStorage: ничего не удаляем, локальная правка выигрывает. */
+export function mergePlannerStates(server: PlannerSyncState, local: PlannerSyncState): PlannerSyncState {
+  return {
+    tasks: mergeById(server.tasks, local.tasks),
+    assignments: server.assignments,
+    goals: mergeById(server.goals, local.goals),
+    entries: mergeById(server.entries, local.entries, (serverEntry, localEntry) => ({
+      ...serverEntry,
+      ...localEntry,
+      media: serverEntry.media ?? localEntry.media,
+    })),
+    events: mergeById(server.events, local.events),
+    ideas: mergeById(server.ideas, local.ideas),
+    finances: preferredFinanceState(server.finances, local.finances),
+    syncUpdatedAt: local.syncUpdatedAt,
+  };
+}
+
 /** Загружает состояние сервера; если сервер пуст — отправляет туда локальные данные. */
 export async function adoptServerState(config: PlannerApiConfig): Promise<PlannerSyncState | null> {
   const server = await fetchServerState(config);
-  if (countPlannerItems(server) > 0) return server;
   const local = loadPlannerState();
-  await pushServerState(config, {
+  const localState: PlannerSyncState = {
     tasks: asArray<PlanTask>(local?.tasks),
+    assignments: asArray<Assignment>(local?.assignments),
     goals: asArray<Goal>(local?.goals),
     entries: asArray<JournalEntry>(local?.entries),
     events: asArray<CalendarEvent>(local?.events),
     ideas: asArray<Idea>(local?.ideas),
-  });
-  return null;
+    finances: normalizeFinanceState(local?.finances),
+    syncUpdatedAt: local?.savedAt,
+  };
+
+  if (countPlannerItems(server) === 0) {
+    await pushServerState(config, localState, { includeAssignments: true, clientUpdatedAt: local?.savedAt });
+    return null;
+  }
+  if (countPlannerItems(localState) === 0) return server;
+
+  // До этой версии время локального сохранения не записывалось. Один раз
+  // объединяем обе копии, чтобы свежий пункт с телефона не мог исчезнуть.
+  if (!local?.savedAt) {
+    const merged = mergePlannerStates(server, localState);
+    const mergedAt = new Date().toISOString();
+    await pushServerState(config, merged, { clientUpdatedAt: mergedAt });
+    return { ...merged, syncUpdatedAt: mergedAt };
+  }
+
+  if (server.syncUpdatedAt && local.savedAt > server.syncUpdatedAt) {
+    const localPreferred = { ...localState, assignments: server.assignments };
+    await pushServerState(config, localPreferred, { clientUpdatedAt: local.savedAt });
+    return localPreferred;
+  }
+  return server;
 }
 
 /** Сохраняет состояние и локально, и на сервере (если синхронизация включена). */
 export async function persistPlannerState(state: PlannerSyncState, config: PlannerApiConfig) {
-  savePlannerState(state);
-  if (config.enabled && config.token && config.baseUrl) {
-    await pushServerState(config, state);
+  const savedAt = savePlannerState(state);
+  if (config.enabled) {
+    await pushServerState(config, state, { clientUpdatedAt: savedAt });
   }
 }
 
@@ -137,13 +250,33 @@ export async function persistPlannerState(state: PlannerSyncState, config: Plann
 async function apiSend<T>(config: PlannerApiConfig, path: string, init: RequestInit): Promise<T> {
   const response = await fetch(apiUrl(config, path), {
     ...init,
-    headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${config.token}` },
+    headers: apiHeaders(config, init.headers as Record<string, string> | undefined),
   });
   const body = await readApiEnvelope<T>(response);
   if (!response.ok || !body.ok || body.data === undefined) {
     throw new Error(body.error || `API запрос завершился ошибкой (${response.status})`);
   }
   return body.data;
+}
+
+export async function createAssignmentRemote(config: PlannerApiConfig, input: { title: string; description?: string; dueDate?: string; completed?: boolean }): Promise<Assignment> {
+  return apiSend<Assignment>(config, "/api/v1/assignments", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateAssignmentRemote(config: PlannerApiConfig, id: string, changes: Partial<Pick<Assignment, "title" | "description" | "dueDate" | "completed">>): Promise<Assignment> {
+  return apiSend<Assignment>(config, `/api/v1/assignments/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+}
+
+export async function deleteAssignmentRemote(config: PlannerApiConfig, id: string): Promise<void> {
+  await apiSend<{ deleted: boolean }>(config, `/api/v1/assignments/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function createJournalEntryRemote(config: PlannerApiConfig, entry: { id: string; date: string; title?: string; body?: string; mood?: string; tags?: string[] }): Promise<JournalEntry> {

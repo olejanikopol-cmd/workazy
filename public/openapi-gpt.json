@@ -3,7 +3,7 @@
   "info": {
     "title": "Workazy Custom GPT Actions",
     "version": "1.0.0",
-    "description": "Действия Custom GPT для личного планера Workazy: задачи, цели, текстовый дневник, идеи, события календаря и сводки. Даты передаются в формате YYYY-MM-DD, время в формате HH:MM. Часовой пояс планера — Europe/Kyiv. Относительные даты, например «завтра» или «в пятницу», ассистент преобразует в конкретную дату до вызова API. Медиафайлы через Actions не загружаются."
+    "description": "Действия Custom GPT для Workazy: отдельные задания, цели, текстовый дневник, идеи, события календаря и сводки. Задания сохраняются во вкладке «Задания» и никогда не создают пункты ежедневного плана. Даты передаются в формате YYYY-MM-DD, время в формате HH:MM. Часовой пояс планера — Europe/Kyiv. Относительные даты ассистент преобразует в конкретную дату до вызова API. Медиафайлы через Actions не загружаются."
   },
   "servers": [
     {
@@ -16,21 +16,12 @@
     }
   ],
   "paths": {
-    "/api/v1/tasks": {
+    "/api/v1/assignments": {
       "get": {
-        "operationId": "listTasks",
-        "summary": "Получить задачи",
-        "description": "Возвращает задачи на указанную дату. Без date возвращает задачи на сегодня. completed=false оставляет только невыполненные задачи, completed=true — только выполненные.",
+        "operationId": "listAssignments",
+        "summary": "Получить отдельные задания",
+        "description": "Возвращает задания из вкладки «Задания». Они не связаны с ежедневным планом. completed=false оставляет только активные задания, completed=true — только выполненные.",
         "parameters": [
-          {
-            "name": "date",
-            "in": "query",
-            "required": false,
-            "description": "Дата в формате YYYY-MM-DD",
-            "schema": {
-              "type": "string"
-            }
-          },
           {
             "name": "completed",
             "in": "query",
@@ -47,15 +38,15 @@
         }
       },
       "post": {
-        "operationId": "addTask",
-        "summary": "Создать задачу",
-        "description": "Добавляет новую задачу. Если дата не указана, используется сегодняшний день.",
+        "operationId": "addAssignment",
+        "summary": "Создать отдельное задание",
+        "description": "Добавляет задание во вкладку «Задания». Не создаёт и не изменяет пункт ежедневного плана.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TaskCreate"
+                "$ref": "#/components/schemas/AssignmentCreate"
               }
             }
           }
@@ -67,11 +58,11 @@
         }
       }
     },
-    "/api/v1/tasks/{id}": {
+    "/api/v1/assignments/{id}": {
       "patch": {
-        "operationId": "updateTask",
-        "summary": "Изменить задачу",
-        "description": "Изменяет текст, дату, порядок или статус выполнения задачи.",
+        "operationId": "updateAssignment",
+        "summary": "Изменить задание",
+        "description": "Изменяет название, описание, срок или статус отдельного задания.",
         "parameters": [
           {
             "name": "id",
@@ -87,7 +78,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TaskUpdate"
+                "$ref": "#/components/schemas/AssignmentUpdate"
               }
             }
           }
@@ -99,9 +90,9 @@
         }
       },
       "delete": {
-        "operationId": "deleteTask",
-        "summary": "Удалить задачу",
-        "description": "Безвозвратно удаляет задачу по идентификатору.",
+        "operationId": "deleteAssignment",
+        "summary": "Удалить задание",
+        "description": "Безвозвратно удаляет отдельное задание по идентификатору.",
         "parameters": [
           {
             "name": "id",
@@ -119,11 +110,11 @@
         }
       }
     },
-    "/api/v1/tasks/{id}/complete": {
+    "/api/v1/assignments/{id}/complete": {
       "post": {
-        "operationId": "completeTask",
-        "summary": "Отметить задачу выполненной",
-        "description": "Помечает задачу выполненной. Если известен только текст, сначала вызови listTasks и найди идентификатор задачи.",
+        "operationId": "completeAssignment",
+        "summary": "Отметить задание выполненным",
+        "description": "Помечает отдельное задание выполненным. Если известен только текст, сначала вызови listAssignments и найди идентификатор.",
         "parameters": [
           {
             "name": "id",
@@ -607,46 +598,44 @@
           }
         }
       },
-      "TaskCreate": {
+      "AssignmentCreate": {
         "type": "object",
         "required": ["title"],
         "properties": {
           "title": {
             "type": "string",
-            "description": "Текст задачи"
+            "description": "Название задания"
           },
-          "date": {
+          "description": {
             "type": "string",
-            "format": "date"
+            "description": "Подробности задания"
+          },
+          "dueDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Необязательный срок задания"
           },
           "completed": {
             "type": "boolean",
             "default": false
-          },
-          "position": {
-            "type": "integer",
-            "minimum": 0
           }
         }
       },
-      "TaskUpdate": {
+      "AssignmentUpdate": {
         "type": "object",
         "minProperties": 1,
         "properties": {
           "title": {
             "type": "string"
           },
-          "date": {
+          "description": {
+            "type": "string"
+          },
+          "dueDate": {
             "type": "string",
             "format": "date"
           },
-          "completed": {
-            "type": "boolean"
-          },
-          "position": {
-            "type": "integer",
-            "minimum": 0
-          }
+          "completed": { "type": "boolean" }
         }
       },
       "GoalCreate": {

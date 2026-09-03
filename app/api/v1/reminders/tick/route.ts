@@ -1,15 +1,17 @@
 export const dynamic = "force-dynamic";
 
-// Почасовой дайджест для Telegram-бота:
+// Точные уведомления о событиях и финансовых сроках плюс почасовой дайджест:
 // незакрытые хвосты прошлых дней, задачи и события на сегодня и завтра.
 // ✅ — выполненные пункты плана, ❌ — невыполненные.
 // Анти-дублирование: сообщение отправляется ровно один раз за час,
 // даже если внешний планировщик повторит запрос.
-// Внешний планировщик вызывает раз в час: POST /api/v1/reminders/tick.
-import { and, asc, desc, eq, lt } from "drizzle-orm";
+// Внешний планировщик вызывает каждые 5 минут: POST /api/v1/reminders/tick.
+import { and, asc, desc, eq, gte, lt, lte } from "drizzle-orm";
 import { getDb } from "@/db";
 import { calendarEvents, reminderLogs, settings, tasks } from "@/db/schema";
 import { ApiError, jsonOk, nowIso, readQueryBool, todayDate, withApi } from "@/lib/api";
+import { FINANCE_STATE_KEY, normalizeFinanceState } from "@/lib/finance";
+import { collectDueTelegramNotifications, type DueTelegramNotification } from "@/lib/reminder-scheduler";
 import { sendTelegramMessage } from "@/lib/telegram";
 
 const DIGEST_ENTITY = "digest";
@@ -17,6 +19,7 @@ const DIGEST_ID = "hourly";
 const LIST_LIMIT = 15;
 const OVERDUE_QUERY_LIMIT = 100;
 const TELEGRAM_TEXT_LIMIT = 3900;
+const STALE_LOCK_MS = 3 * 60 * 1000;
 
 type DigestTask = { id: string; title: string; date: string; completed: boolean };
 type DigestEvent = { id: string; title: string; time: string | null };
@@ -95,6 +98,90 @@ function pointWord(count: number): string {
   return "пунктов";
 }
 
+async function reserveTelegramSlot(
+  db: Awaited<ReturnType<typeof getDb>>,
+  lockKey: string,
+  now: Date,
+): Promise<boolean> {
+  const reservedAt = now.toISOString();
+  const inserted = await db
+    .insert(settings)
+    .values({ key: lockKey, value: "sending", updatedAt: reservedAt })
+    .onConflictDoNothing()
+    .returning({ key: settings.key });
+  if (inserted.length) return true;
+
+  // Если воркер оборвался после захвата lock, значение могло навсегда остаться
+  // в состоянии sending. Повторный запуск через несколько минут безопасно
+  // забирает только тот же самый устаревший lock; sent никогда не трогаем.
+  const [existing] = await db
+    .select({ value: settings.value, updatedAt: settings.updatedAt })
+    .from(settings)
+    .where(eq(settings.key, lockKey))
+    .limit(1);
+  if (!existing || existing.value !== "sending") return false;
+  if (existing.updatedAt > new Date(now.getTime() - STALE_LOCK_MS).toISOString()) return false;
+
+  const reclaimed = await db
+    .update(settings)
+    .set({ updatedAt: reservedAt })
+    .where(and(
+      eq(settings.key, lockKey),
+      eq(settings.value, "sending"),
+      eq(settings.updatedAt, existing.updatedAt),
+    ))
+    .returning({ key: settings.key });
+  return reclaimed.length > 0;
+}
+
+function storedObligations(value: string | undefined) {
+  if (!value) return [];
+  try {
+    return normalizeFinanceState(JSON.parse(value)).obligations;
+  } catch {
+    return [];
+  }
+}
+
+async function deliverDueNotifications(
+  db: Awaited<ReturnType<typeof getDb>>,
+  notifications: DueTelegramNotification[],
+  now: Date,
+) {
+  let sent = 0;
+  let skipped = 0;
+  const errors: string[] = [];
+
+  for (const notification of notifications) {
+    const lockKey = `telegram-due:${notification.entityType}:${notification.entityId}:${notification.dueAt}`;
+    const reserved = await reserveTelegramSlot(db, lockKey, now);
+    if (!reserved) {
+      skipped += 1;
+      continue;
+    }
+
+    const log = {
+      entityType: notification.entityType,
+      entityId: notification.entityId,
+      dueAt: notification.dueAt,
+      payload: JSON.stringify({ source: "scheduled" }),
+    } as const;
+    try {
+      await sendTelegramMessage(notification.text);
+      await db.update(settings).set({ value: "sent", updatedAt: nowIso() }).where(eq(settings.key, lockKey));
+      await db.insert(reminderLogs).values({ ...log, status: "sent", sentAt: nowIso() });
+      sent += 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await db.insert(reminderLogs).values({ ...log, status: "error", payload: JSON.stringify({ source: "scheduled", error: message }) });
+      await db.delete(settings).where(eq(settings.key, lockKey));
+      errors.push(`${notification.entityType}:${notification.entityId}: ${message}`);
+    }
+  }
+
+  return { sent, skipped, errors };
+}
+
 function buildMessage(
   overdueTasks: DigestTask[],
   dayTasks: DigestTask[],
@@ -154,7 +241,7 @@ export const POST = withApi(async (request) => {
   const lockKey = `telegram-hour:${hourBucket}`;
   const db = await getDb();
 
-  const [overdueTasks, dayTasks, dayEvents, nextTasks, nextEvents] = await Promise.all([
+  const [overdueTasks, dayTasks, dayEvents, nextTasks, nextEvents, reminderEvents, financeRows] = await Promise.all([
     db
       .select()
       .from(tasks)
@@ -165,7 +252,23 @@ export const POST = withApi(async (request) => {
     db.select().from(calendarEvents).where(eq(calendarEvents.date, date)).orderBy(asc(calendarEvents.time)),
     db.select().from(tasks).where(eq(tasks.date, nextDate)).orderBy(asc(tasks.position), asc(tasks.createdAt)),
     db.select().from(calendarEvents).where(eq(calendarEvents.date, nextDate)).orderBy(asc(calendarEvents.time)),
+    db.select().from(calendarEvents)
+      .where(and(gte(calendarEvents.date, previousDate), lte(calendarEvents.date, nextDate)))
+      .orderBy(asc(calendarEvents.date), asc(calendarEvents.time)),
+    db.select({ value: settings.value }).from(settings).where(eq(settings.key, FINANCE_STATE_KEY)).limit(1),
   ]);
+
+  const timeZone = process.env.WORKAZY_TIME_ZONE ?? "Europe/Kyiv";
+  const dueNotifications = collectDueTelegramNotifications({
+    events: reminderEvents,
+    obligations: storedObligations(financeRows[0]?.value),
+    now,
+    timeZone,
+  });
+  const due = await deliverDueNotifications(db, dueNotifications, now);
+  if (due.errors.length) {
+    throw new ApiError(502, `Не удалось отправить запланированное уведомление в Telegram: ${due.errors[0]}`);
+  }
 
   const pendingTasks = dayTasks.filter((task) => !task.completed);
   const yesterdayPending = overdueTasks.filter((task) => task.date === previousDate).length;
@@ -173,14 +276,10 @@ export const POST = withApi(async (request) => {
   const digestLog = { entityType: DIGEST_ENTITY, entityId: `${DIGEST_ID}:${hourBucket}`, dueAt: nowIso(), payload: JSON.stringify({ hash, date, previousDate, hourBucket, digestHour }) } as const;
 
   if (!force) {
-    const reserved = await db
-      .insert(settings)
-      .values({ key: lockKey, value: "sending", updatedAt: nowIso() })
-      .onConflictDoNothing()
-      .returning({ key: settings.key });
-    if (!reserved.length) {
+    const reserved = await reserveTelegramSlot(db, lockKey, now);
+    if (!reserved) {
       await db.insert(reminderLogs).values({ ...digestLog, status: "skipped" });
-      return jsonOk({ sent: false, reason: "already_sent_this_hour" });
+      return jsonOk({ sent: false, reason: "already_sent_this_hour", due });
     }
   }
 
@@ -208,5 +307,6 @@ export const POST = withApi(async (request) => {
     events: dayEvents.length,
     tomorrowTasks: nextTasks.length,
     tomorrowEvents: nextEvents.length,
+    due,
   });
 });

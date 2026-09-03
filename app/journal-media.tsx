@@ -329,7 +329,7 @@ export function MediaDraftCard({ draft, onRemove, onRetry }: {
     {status.phase === "uploading" && <div className="media-status"><div className="media-progress"><span style={{ width: `${status.percent}%` }} /></div><em>Загрузка {status.percent}%</em></div>}
     {status.phase === "transcribing" && <div className="media-status"><em>Расшифровываю речь…</em></div>}
     {status.phase === "ready" && <div className="media-status ready"><em>Готово: файл в дневнике</em></div>}
-    {status.phase === "local" && <div className="media-status"><em>Ждёт включения синхронизации</em></div>}
+    {status.phase === "local" && <div className="media-status"><em>Ждёт подключения Workazy Cloud</em></div>}
     {status.phase === "error" && <div className="media-status error">
       <em>{status.message}</em>
       <button className="ghost-action" onClick={onRetry}><Icon name="refresh" size={14} />Повторить</button>

@@ -1,4 +1,4 @@
-import type { CalendarEvent, Goal, Idea, JournalEntry, PlanTask } from "./types";
+import type { Assignment, CalendarEvent, FinanceState, Goal, Idea, JournalEntry, PlanTask } from "./types";
 
 export const localDateIso = (date: Date) => {
   const year = date.getFullYear();
@@ -17,10 +17,14 @@ export const initialTasks: PlanTask[] = [
   { id: "task-5", title: "Записать мысли перед сном", completed: false, date: todayIso() },
 ];
 
+// Задания — отдельный поток из Workazy GPT и ручного ввода.
+// Пункты плана сюда намеренно не копируются.
+export const initialAssignments: Assignment[] = [];
+
 export const initialGoals: Goal[] = [
-  { id: "goal-1", title: "Собрать визуальный MVP планера", description: "Цель недели", period: "week", progress: 68, createdAt: "2026-08-18", deadline: "2026-08-24", completed: false },
-  { id: "goal-2", title: "12 тренировок", description: "Вернуть стабильный ритм", period: "month", progress: 42, createdAt: "2026-08-01", deadline: "2026-08-31", completed: false },
-  { id: "goal-3", title: "Выпустить свой первый продукт", description: "Большая цель года", period: "year", progress: 31, createdAt: "2026-01-01", deadline: "2026-12-31", completed: false },
+  { id: "goal-1", title: "Собрать визуальный MVP планера", description: "Цель недели", period: "week", progress: 68, createdAt: "2026-08-18", deadline: "2026-08-24", completed: false, updatedAt: "2026-08-18" },
+  { id: "goal-2", title: "12 тренировок", description: "Вернуть стабильный ритм", period: "month", progress: 42, createdAt: "2026-08-01", deadline: "2026-08-31", completed: false, updatedAt: "2026-08-01" },
+  { id: "goal-3", title: "Выпустить свой первый продукт", description: "Большая цель года", period: "year", progress: 31, createdAt: "2026-01-01", deadline: "2026-12-31", completed: false, updatedAt: "2026-01-01" },
 ];
 
 export const initialEntries: JournalEntry[] = [
@@ -38,3 +42,10 @@ export const initialIdeas: Idea[] = [
   { id: "idea-2", title: "Свой мини-продукт", description: "Собрать прототип за выходные и показать друзьям.", category: "project", status: "plan", createdAt: "2026-08-15", updatedAt: "2026-08-20" },
   { id: "idea-3", title: "Выучить итальянский", category: "someday", status: "new", createdAt: todayIso(), updatedAt: todayIso() },
 ];
+
+export const initialFinanceState: FinanceState = {
+  balance: 0,
+  salarySchedules: [],
+  expenses: [],
+  obligations: [],
+};

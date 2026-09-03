@@ -3,16 +3,11 @@ export const dynamic = "force-dynamic";
 import { asc, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { assignments } from "@/db/schema";
-import { assignmentToJson, jsonOk, newId, nowIso, readBool, readJsonBody, readOptionalText, readQueryBool, requireText, withApi } from "@/lib/api";
-import { backfillLegacyChatGptAssignment } from "@/lib/legacy-assignments";
-
-// Совместимость со старой схемой Custom GPT. Исторический путь /tasks теперь
-// является алиасом отдельной вкладки «Задания» и больше не меняет план.
+import { assignmentToJson, jsonOk, newId, nowIso, readBool, readIsoDate, readJsonBody, readOptionalText, readQueryBool, requireText, withApi } from "@/lib/api";
 
 export const GET = withApi(async (request) => {
   const completed = readQueryBool(new URL(request.url).searchParams.get("completed"), "completed");
   const db = await getDb();
-  await backfillLegacyChatGptAssignment(db);
   const query = db.select().from(assignments);
   const rows = completed === undefined
     ? await query.orderBy(asc(assignments.completed), asc(assignments.dueDate), desc(assignments.createdAt))
@@ -22,13 +17,17 @@ export const GET = withApi(async (request) => {
 
 export const POST = withApi(async (request) => {
   const body = await readJsonBody(request);
-  const title = requireText(body.title, "title", { maxLength: 300 });
-  const description = readOptionalText(body.description, "description", { maxLength: 2000 }) ?? null;
-  const completed = readBool(body.completed, "completed") ?? false;
   const now = nowIso();
-  const row = { id: newId("assignment"), title, description, dueDate: null, completed, createdAt: now, updatedAt: now };
+  const row = {
+    id: newId("assignment"),
+    title: requireText(body.title, "title", { maxLength: 300 }),
+    description: readOptionalText(body.description, "description", { maxLength: 2000 }) ?? null,
+    dueDate: readIsoDate(body.dueDate, "dueDate", { required: false }) ?? null,
+    completed: readBool(body.completed, "completed") ?? false,
+    createdAt: now,
+    updatedAt: now,
+  };
   const db = await getDb();
-  await backfillLegacyChatGptAssignment(db);
   await db.insert(assignments).values(row);
   return jsonOk(assignmentToJson(row), 201);
 });

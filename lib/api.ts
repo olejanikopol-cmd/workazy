@@ -1,6 +1,6 @@
 // Ядро API: авторизация, валидация, ответы, сериализация строк БД.
 // Роуты оборачиваются в withApi(): проверка токена + единый формат ошибок.
-import type { calendarEvents, goals, ideas, journalEntries, reminderLogs, tasks } from "@/db/schema";
+import type { assignments, calendarEvents, goals, ideas, journalEntries, reminderLogs, tasks } from "@/db/schema";
 
 export class ApiError extends Error {
   constructor(
@@ -22,20 +22,33 @@ export function jsonError(status: number, error: string, requestId?: string): Re
 }
 
 // ---------- Авторизация ----------
-// Пока один статический токен (секрет WORKAZY_API_TOKEN).
-// Когда появится настоящая авторизация, она подключится только здесь.
+// Workazy GPT и внешние клиенты используют статический bearer-токен.
+// Сам сайт может работать без хранения секрета в браузере: Sites передаёт
+// подтверждённый email текущего ChatGPT-пользователя в защищённом заголовке.
 
-export async function getExpectedApiToken(): Promise<string | undefined> {
-  if (process.env.WORKAZY_API_TOKEN) return process.env.WORKAZY_API_TOKEN;
+async function readRuntimeEnv(name: string): Promise<string | undefined> {
+  if (process.env[name]) return process.env[name];
   try {
     const { env } = await import("cloudflare:workers");
-    return typeof env.WORKAZY_API_TOKEN === "string" ? env.WORKAZY_API_TOKEN : undefined;
+    const value = env[name];
+    return typeof value === "string" ? value : undefined;
   } catch {
     return undefined;
   }
 }
 
+export async function getExpectedApiToken(): Promise<string | undefined> {
+  return readRuntimeEnv("WORKAZY_API_TOKEN");
+}
+
+async function isAuthenticatedOwner(request: Request): Promise<boolean> {
+  const expected = (await readRuntimeEnv("WORKAZY_OWNER_EMAIL"))?.trim().toLowerCase();
+  const actual = request.headers.get("oai-authenticated-user-email")?.trim().toLowerCase();
+  return Boolean(expected && actual && expected === actual);
+}
+
 export async function requireApiToken(request: Request): Promise<Response | null> {
+  if (await isAuthenticatedOwner(request)) return null;
   const expected = await getExpectedApiToken();
   if (!expected) return jsonError(503, "API-токен не настроен на сервере");
   const header = request.headers.get("authorization") ?? "";
@@ -265,6 +278,18 @@ export function withApi<Params extends RouteParams = RouteParams>(
 
 export function taskToJson(row: typeof tasks.$inferSelect) {
   return { id: row.id, title: row.title, completed: row.completed, date: row.date, position: row.position, createdAt: row.createdAt, updatedAt: row.updatedAt };
+}
+
+export function assignmentToJson(row: typeof assignments.$inferSelect) {
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description ?? undefined,
+    dueDate: row.dueDate ?? undefined,
+    completed: row.completed,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
 }
 
 export function goalToJson(row: typeof goals.$inferSelect) {

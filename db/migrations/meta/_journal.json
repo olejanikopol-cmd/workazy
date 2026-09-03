@@ -15,6 +15,13 @@
       "when": 1787514954613,
       "tag": "0001_hesitant_jazinda",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787791640284,
+      "tag": "0002_opposite_kitty_pryde",
+      "breakpoints": true
     }
   ]
 }
