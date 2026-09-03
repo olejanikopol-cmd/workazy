@@ -2,9 +2,9 @@ name: Workazy Telegram reminders
 
 on:
   schedule:
-    # One runner stays alive across the whole hour and checks exact reminders
-    # every 15 seconds. Minute 53 avoids the busiest start-of-hour queue.
-    - cron: "53 * * * *"
+    # Start early so GitHub queue delays do not move the user-facing digest.
+    # The already-running job sends it at minute 55 in Europe/Kyiv.
+    - cron: "40 * * * *"
   workflow_dispatch:
   push:
     paths:
@@ -36,6 +36,7 @@ jobs:
             let token = "";
             let refreshTokenAt = 0;
             let consecutiveFailures = 0;
+            let lastDigestBucket = "";
 
             const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -56,22 +57,34 @@ jobs:
               return body ? JSON.parse(body) : {};
             }
 
-            try {
-              const digest = await post(false);
-              core.info(`Hourly digest checked: ${JSON.stringify(digest)}`);
-            } catch (error) {
-              // A temporary digest failure must not disable exact reminders
-              // for the rest of the hour. The poller keeps retrying below.
-              token = "";
-              core.warning(`Hourly digest failed; exact checks will continue: ${error.message}`);
+            function kyivClock() {
+              const parts = new Intl.DateTimeFormat("en-CA", {
+                timeZone: "Europe/Kyiv",
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+                hourCycle: "h23",
+              }).formatToParts(new Date());
+              const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+              return {
+                minute: values.minute,
+                bucket: `${values.year}-${values.month}-${values.day}T${values.hour}`,
+              };
             }
 
             while (Date.now() < runUntil) {
               const startedAt = Date.now();
+              const clock = kyivClock();
+              const wantsDigest = clock.minute === "55" && lastDigestBucket !== clock.bucket;
               try {
-                const result = await post(true);
+                const result = await post(!wantsDigest);
                 consecutiveFailures = 0;
-                if (result?.data?.due?.sent) {
+                if (wantsDigest) {
+                  lastDigestBucket = clock.bucket;
+                  core.info(`Hourly digest checked at Kyiv :55: ${JSON.stringify(result)}`);
+                } else if (result?.data?.due?.sent) {
                   core.info(`Sent exact reminder: ${JSON.stringify(result.data.due)}`);
                 }
               } catch (error) {
