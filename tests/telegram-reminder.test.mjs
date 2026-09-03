@@ -233,3 +233,14 @@ test("GitHub keeps an authenticated exact-time reminder poller alive", async () 
   assert.match(proxy, /searchParams\.set\("dueOnly", dueOnly\)/);
   assert.match(tick, /if \(dueOnly\) \{[\s\S]*return jsonOk\(\{ sent: due\.sent > 0, due \}\)/);
 });
+
+test("the Worker runs exact-time reminder ticks every minute without the public URL", async () => {
+  const worker = await readFile(new URL("worker/index.ts", root), "utf8");
+  const vite = await readFile(new URL("vite.config.ts", root), "utf8");
+  assert.match(vite, /crons: \["\* \* \* \* \*"\]/);
+  assert.match(worker, /async scheduled\(/);
+  assert.match(worker, /const dueOnly = minute !== "55"/);
+  assert.match(worker, /workazy\.internal\/api\/v1\/reminders\/tick/);
+  assert.match(worker, /dueOnly \? "\?dueOnly=true" : ""/);
+  assert.doesNotMatch(worker, /personal-planner\.uchepir\.chatgpt\.site/);
+});

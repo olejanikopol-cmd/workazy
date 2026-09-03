@@ -6,6 +6,8 @@ interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   MEDIA: R2Bucket;
+  WORKAZY_API_TOKEN?: string;
+  WORKAZY_TIME_ZONE?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -42,6 +44,36 @@ const worker = {
     }
 
     return handler.fetch(request, env, ctx);
+  },
+
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Run exact-time reminders inside the Worker. This avoids relying on the
+    // public Sites URL (or a long-lived GitHub job) for minute-by-minute ticks.
+    const headers = new Headers();
+    if (env.WORKAZY_API_TOKEN) {
+      headers.set("Authorization", `Bearer ${env.WORKAZY_API_TOKEN}`);
+    }
+
+    const timeZone = env.WORKAZY_TIME_ZONE ?? "Europe/Kyiv";
+    const minute = new Intl.DateTimeFormat("en", {
+      timeZone,
+      minute: "2-digit",
+    }).format(new Date());
+    const dueOnly = minute !== "55";
+
+    const response = await this.fetch(
+      new Request(`https://workazy.internal/api/v1/reminders/tick${dueOnly ? "?dueOnly=true" : ""}`, {
+        method: "POST",
+        headers,
+      }),
+      env,
+      ctx,
+    );
+
+    if (!response.ok) {
+      const details = await response.text().catch(() => "");
+      throw new Error(`Workazy reminder tick failed (${response.status}): ${details.slice(0, 500)}`);
+    }
   },
 };
 
