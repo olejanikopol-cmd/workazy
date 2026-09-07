@@ -19,7 +19,7 @@ permissions:
 
 concurrency:
   group: workazy-telegram-reminders
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   send-reminder:
@@ -77,7 +77,7 @@ jobs:
             while (Date.now() < runUntil) {
               const startedAt = Date.now();
               const clock = kyivClock();
-              const wantsDigest = clock.minute === "55" && lastDigestBucket !== clock.bucket;
+              const wantsDigest = Number(clock.minute) >= 55 && lastDigestBucket !== clock.bucket;
               try {
                 const result = await post(!wantsDigest);
                 consecutiveFailures = 0;
