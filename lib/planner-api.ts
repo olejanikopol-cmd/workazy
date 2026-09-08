@@ -272,6 +272,20 @@ export async function adoptServerState(config: PlannerApiConfig): Promise<Planne
   return merged;
 }
 
+/** После сбоя отправляет видимое состояние телефона в облако.
+ * Серверные задания сохраняются: их мог добавить Workazy GPT параллельно.
+ */
+export async function recoverServerState(
+  config: PlannerApiConfig,
+  localState: PlannerSyncState,
+): Promise<PlannerSyncState> {
+  const server = await fetchServerState(config);
+  const recoveredAt = new Date().toISOString();
+  const recovered = { ...localState, assignments: server.assignments, syncUpdatedAt: recoveredAt };
+  await pushServerState(config, recovered, { clientUpdatedAt: recoveredAt });
+  return recovered;
+}
+
 /** Сохраняет состояние и локально, и на сервере (если синхронизация включена). */
 let pendingSave: Promise<void> = Promise.resolve();
 export async function persistPlannerState(state: PlannerSyncState, config: PlannerApiConfig) {
