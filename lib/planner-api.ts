@@ -95,7 +95,7 @@ async function readApiEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
 }
 
 async function apiGet<T>(config: PlannerApiConfig, path: string): Promise<T> {
-  const response = await fetch(apiUrl(config, path), {
+  const response = await fetchSyncWithRetry(apiUrl(config, path), {
     headers: apiHeaders(config),
   });
   const body = await readApiEnvelope<T>(response);
@@ -168,6 +168,33 @@ function mergeById<T extends { id: string }>(server: T[], local: T[], combine?: 
   return [...merged.values()];
 }
 
+function taskTimestamp(task: PlanTask): string {
+  return task.updatedAt ?? task.createdAt ?? "";
+}
+
+function preferredTask(serverTask: PlanTask, localTask: PlanTask): PlanTask {
+  const serverTimestamp = taskTimestamp(serverTask);
+  const localTimestamp = taskTimestamp(localTask);
+  if (serverTimestamp && localTimestamp && serverTimestamp !== localTimestamp) {
+    return localTimestamp > serverTimestamp ? localTask : serverTask;
+  }
+  // Старые пункты могли не иметь updatedAt. В неоднозначном случае
+  // выполненный пункт безопаснее незаметно не возвращать в незавершённые.
+  if (serverTask.completed !== localTask.completed) {
+    return serverTask.completed ? serverTask : localTask;
+  }
+  return localTask;
+}
+
+/** Объединяет только совпадающие пункты; удалённые пункты не воскрешает. */
+export function preserveNewerTaskEdits(server: PlanTask[], local: PlanTask[]): PlanTask[] {
+  const localById = new Map(local.map((task) => [task.id, task]));
+  return server.map((serverTask) => {
+    const localTask = localById.get(serverTask.id);
+    return localTask ? preferredTask(serverTask, localTask) : serverTask;
+  });
+}
+
 function financeHasData(finances: FinanceState) {
   return finances.balance > 0 || finances.salarySchedules.length > 0 || finances.expenses.length > 0 || finances.obligations.length > 0;
 }
@@ -232,15 +259,33 @@ export async function adoptServerState(config: PlannerApiConfig): Promise<Planne
     await pushServerState(config, localPreferred, { clientUpdatedAt: local.savedAt });
     return localPreferred;
   }
-  return server;
+
+  // Более новая общая серверная копия могла появиться из-за изменения
+  // финансов или календаря. Это не должно отменять более свежую галочку
+  // у уже существующего пункта плана на телефоне.
+  const tasksWithPreservedEdits = preserveNewerTaskEdits(server.tasks, localState.tasks);
+  if (JSON.stringify(tasksWithPreservedEdits) === JSON.stringify(server.tasks)) return server;
+
+  const mergedAt = new Date().toISOString();
+  const merged = { ...server, tasks: tasksWithPreservedEdits, syncUpdatedAt: mergedAt };
+  await pushServerState(config, merged, { clientUpdatedAt: mergedAt });
+  return merged;
 }
 
 /** Сохраняет состояние и локально, и на сервере (если синхронизация включена). */
+let pendingSave: Promise<void> = Promise.resolve();
 export async function persistPlannerState(state: PlannerSyncState, config: PlannerApiConfig) {
-  const savedAt = savePlannerState(state);
-  if (config.enabled) {
+  // Sending/closing an idle tab is not a new edit. Keep the edit's timestamp.
+  const saved = loadPlannerState();
+  if (saved && ["tasks", "goals", "entries", "events", "ideas", "finances"].some((key) =>
+    JSON.stringify(saved[key as keyof typeof saved]) !== JSON.stringify(state[key as keyof PlannerSyncState]))) return;
+  const savedAt = saved?.savedAt ?? savePlannerState(state);
+  if (!config.enabled) return;
+  const operation = pendingSave.catch(() => undefined).then(async () => {
     await pushServerState(config, state, { clientUpdatedAt: savedAt });
-  }
+  });
+  pendingSave = operation;
+  await operation;
 }
 
 // ---------- Медиа дневника ----------
