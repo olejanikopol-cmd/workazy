@@ -5,7 +5,7 @@ import type { AppTab, Assignment, CalendarEvent, FinanceState, Goal, Idea, Journ
 import { initialAssignments, initialEntries, initialEvents, initialFinanceState, initialGoals, initialIdeas, initialTasks, localDateIso, todayIso } from "@/lib/planner-data";
 import { normalizeFinanceState } from "@/lib/finance";
 import { loadPlannerState, savePlannerState } from "@/lib/planner-storage";
-import { adoptServerState, defaultApiConfig, loadApiConfig, persistPlannerState, saveApiConfig, type PlannerApiConfig } from "@/lib/planner-api";
+import { adoptServerState, defaultApiConfig, loadApiConfig, persistPlannerState, recoverServerState, saveApiConfig, type PlannerApiConfig } from "@/lib/planner-api";
 import { CalendarScreen, GoalsScreen, IdeasScreen, JournalScreen, SettingsSheet, TasksScreen, TaskTextSheet } from "./secondary-screens";
 import { FinanceScreen } from "./finance-screen";
 
@@ -276,7 +276,7 @@ export default function PlannerApp() {
       if (recoveryRunning.current) return;
       recoveryRunning.current = true;
       try {
-        const serverState = await adoptServerState(apiConfig);
+        const serverState = await recoverServerState(apiConfig, latestState.current);
         if (cancelled) return;
         if (serverState) {
           setTasks(serverState.tasks);
