@@ -53,6 +53,34 @@ function WorkspaceTabs({ tabs, activeTab, label, className, onSelect }: {
 
 const PLAN_DATE_STORAGE_KEY = "workazy-selected-plan-date-v1";
 
+function blurFocusedField() {
+  if (typeof document === "undefined") return;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return;
+  if (active.matches("input, textarea, select, [contenteditable='true']")) active.blur();
+}
+
+function resetDocumentScroll() {
+  if (typeof window === "undefined") return;
+  window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  document.scrollingElement?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+}
+
+function queueDocumentScrollReset() {
+  if (typeof window === "undefined") return () => undefined;
+  resetDocumentScroll();
+  const frame = window.requestAnimationFrame(resetDocumentScroll);
+  const firstTimer = window.setTimeout(resetDocumentScroll, 120);
+  const keyboardTimer = window.setTimeout(resetDocumentScroll, 360);
+  return () => {
+    window.cancelAnimationFrame(frame);
+    window.clearTimeout(firstTimer);
+    window.clearTimeout(keyboardTimer);
+  };
+}
+
 function loadStoredPlanDate() {
   if (typeof window === "undefined") return null;
   try {
@@ -124,6 +152,7 @@ export default function PlannerApp() {
   const [ideas, setIdeas] = useState<Idea[]>(initialIdeas);
   const [finances, setFinances] = useState<FinanceState>(initialFinanceState);
   const [hydrated, setHydrated] = useState(false);
+  const [syncError, setSyncError] = useState("");
   const [selectedDate, setSelectedDate] = useState(todayIso());
   const [editorOpen, setEditorOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -142,12 +171,17 @@ export default function PlannerApp() {
     finance: "finance",
   });
   const latestState = useRef({ tasks, assignments, goals, entries, events, ideas, finances });
+  const recoveryRunning = useRef(false);
 
   const activePrimaryTab = primaryForTab[activeTab];
   const dayTasks = useMemo(() => tasks.filter((task) => task.date === selectedDate), [tasks, selectedDate]);
   const completed = dayTasks.filter((task) => task.completed).length;
   const progress = dayTasks.length ? Math.round((completed / dayTasks.length) * 100) : 0;
   const readingTask = readingTaskId ? tasks.find((task) => task.id === readingTaskId) ?? null : null;
+
+  useEffect(() => {
+    return queueDocumentScrollReset();
+  }, [activeTab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -186,6 +220,7 @@ export default function PlannerApp() {
         }
       } catch (error) {
         console.error("Не удалось включить синхронизацию", error);
+        setSyncError("Не удалось загрузить облачную копию. Изменения сохраняются на этом устройстве.");
       }
       if (cancelled) return;
       setApiConfig(config);
@@ -225,12 +260,49 @@ export default function PlannerApp() {
     }
     if (!apiConfig.enabled) return;
     const timer = window.setTimeout(() => {
-      void persistPlannerState({ tasks, assignments, goals, entries, events, ideas, finances }, apiConfig).catch((error) => {
+      void persistPlannerState({ tasks, assignments, goals, entries, events, ideas, finances }, apiConfig).then(() => setSyncError("")).catch((error) => {
         console.error("Не удалось синхронизировать данные", error);
+        setSyncError(error instanceof Error ? error.message : "Не удалось сохранить изменения в облаке.");
       });
     }, 350);
     return () => window.clearTimeout(timer);
   }, [tasks, assignments, goals, entries, events, ideas, finances, hydrated, apiConfig]);
+
+  useEffect(() => {
+    if (!hydrated || !apiConfig.enabled || !syncError) return;
+    let cancelled = false;
+
+    async function recoverCloudState() {
+      if (recoveryRunning.current) return;
+      recoveryRunning.current = true;
+      try {
+        const serverState = await adoptServerState(apiConfig);
+        if (cancelled) return;
+        if (serverState) {
+          setTasks(serverState.tasks);
+          setAssignments(serverState.assignments);
+          setGoals(serverState.goals);
+          setEntries(serverState.entries);
+          setEvents(serverState.events);
+          setIdeas(serverState.ideas);
+          setFinances(serverState.finances);
+          savePlannerState(serverState, serverState.syncUpdatedAt);
+        }
+        setSyncError("");
+      } catch (error) {
+        console.error("Повторная синхронизация не удалась", error);
+      } finally {
+        recoveryRunning.current = false;
+      }
+    }
+
+    void recoverCloudState();
+    const timer = window.setInterval(() => void recoverCloudState(), 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [hydrated, apiConfig, syncError]);
 
   useEffect(() => {
     if (!hydrated || !apiConfig.enabled) return;
@@ -294,8 +366,9 @@ export default function PlannerApp() {
   }, [openMenuId]);
 
   function toggleTask(id: string) {
+    if (!hydrated) return;
     setOpenMenuId(null);
-    setTasks((current) => current.map((task) => task.id === id ? { ...task, completed: !task.completed } : task));
+    setTasks((current) => current.map((task) => task.id === id ? { ...task, completed: !task.completed, updatedAt: new Date().toISOString() } : task));
   }
 
   function removeTask(id: string) {
@@ -308,7 +381,7 @@ export default function PlannerApp() {
     const current = tasks.find((task) => task.id === id);
     if (!current) return;
     const next = window.prompt("Изменить пункт", current.title)?.trim();
-    if (next) setTasks((items) => items.map((task) => task.id === id ? { ...task, title: next } : task));
+    if (next) setTasks((items) => items.map((task) => task.id === id ? { ...task, title: next, updatedAt: new Date().toISOString() } : task));
     setOpenMenuId(null);
   }
 
@@ -322,6 +395,9 @@ export default function PlannerApp() {
       const from = copy.findIndex((task) => task.id === id);
       const to = copy.findIndex((task) => task.id === target.id);
       [copy[from], copy[to]] = [copy[to], copy[from]];
+      const updatedAt = new Date().toISOString();
+      copy[from] = { ...copy[from], updatedAt };
+      copy[to] = { ...copy[to], updatedAt };
       return copy;
     });
     setOpenMenuId(null);
@@ -368,7 +444,8 @@ export default function PlannerApp() {
   function savePlan() {
     const titles = editorText.split("\n").map((line) => line.replace(/^\s*\d+[.)]\s*/, "").trim()).filter(Boolean);
     if (!titles.length) return;
-    const next = titles.map<PlanTask>((title) => ({ id: uid("task"), title, completed: false, date: selectedDate }));
+    const now = new Date().toISOString();
+    const next = titles.map<PlanTask>((title) => ({ id: uid("task"), title, completed: false, date: selectedDate, createdAt: now, updatedAt: now }));
     setTasks((current) => [...current, ...next]);
     setEditorText("1. ");
     setEditorOpen(false);
@@ -378,7 +455,8 @@ export default function PlannerApp() {
     event.preventDefault();
     const title = quickTaskTitle.trim();
     if (!title) return;
-    setTasks((current) => [...current, { id: uid("task"), title, completed: false, date: selectedDate }]);
+    const now = new Date().toISOString();
+    setTasks((current) => [...current, { id: uid("task"), title, completed: false, date: selectedDate, createdAt: now, updatedAt: now }]);
     setQuickTaskTitle("");
   }
 
@@ -391,12 +469,23 @@ export default function PlannerApp() {
   }
 
   function openTab(tab: AppTab) {
+    blurFocusedField();
+    if (tab === activeTab) {
+      queueDocumentScrollReset();
+      return;
+    }
     lastTabBySection.current[primaryForTab[tab]] = tab;
     setActiveTab(tab);
   }
 
   function openPrimaryTab(tab: PrimaryTab) {
-    setActiveTab(lastTabBySection.current[tab]);
+    blurFocusedField();
+    const nextTab = lastTabBySection.current[tab];
+    if (nextTab === activeTab) {
+      queueDocumentScrollReset();
+      return;
+    }
+    setActiveTab(nextTab);
   }
 
   const planningSectionTabs = <WorkspaceTabs tabs={planningTabs} activeTab={activeTab} label="Разделы планирования" className="planning-workspace-tabs" onSelect={openTab} />;
@@ -406,7 +495,9 @@ export default function PlannerApp() {
     <main className="app-shell">
       <div className="ambient ambient-one" />
       <div className="ambient ambient-two" />
-      <div className="app-frame">
+      {!hydrated && <p role="status">Загружаю сохранённые данные…</p>}
+      {syncError && <p role="alert" className="finance-over-limit">Нет связи с облаком. Повторяю синхронизацию автоматически — изменения на телефоне сохранены.</p>}
+      <div className="app-frame" inert={!hydrated}>
         <header className="topbar">
           <div className="brand-mark" aria-label="Личный планер">Л</div>
           <button className="icon-button" aria-label="Открыть настройки" onClick={() => setSettingsOpen(true)}><Icon name="settings" size={20} /></button>
@@ -454,7 +545,7 @@ export default function PlannerApp() {
                     <button type="button" onClick={() => editTask(task.id)}>Изменить</button>
                     <button type="button" onClick={() => moveTask(task.id, -1)} disabled={index === 0}>Выше</button>
                     <button type="button" onClick={() => moveTask(task.id, 1)} disabled={index === dayTasks.length - 1}>Ниже</button>
-                    <label>Перенести<input type="date" value={task.date} onChange={(e) => { setTasks((items) => items.map((item) => item.id === task.id ? { ...item, date: e.target.value } : item)); setOpenMenuId(null); }} /></label>
+                    <label>Перенести<input type="date" value={task.date} onChange={(e) => { setTasks((items) => items.map((item) => item.id === task.id ? { ...item, date: e.target.value, updatedAt: new Date().toISOString() } : item)); setOpenMenuId(null); }} /></label>
                     <button type="button" className="danger" onClick={() => removeTask(task.id)}>Удалить</button>
                   </div>
                   }
