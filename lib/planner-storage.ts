@@ -23,7 +23,13 @@ export function loadPlannerState(): StoredPlannerState | null {
 
 export function savePlannerState(state: StoredPlannerState, savedAt = new Date().toISOString()): string {
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, savedAt }));
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, savedAt }));
+    } catch (error) {
+      // Переполненное или временно недоступное хранилище телефона не должно
+      // маскироваться под сбой облака и останавливать серверную синхронизацию.
+      console.warn("Не удалось обновить локальную копию планера", error);
+    }
   }
   return savedAt;
 }
