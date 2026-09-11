@@ -43,7 +43,7 @@ npm run export:ios # expo export --platform ios  → writes dist/
 | `/` | redirects to `/(tabs)/plans` |
 | `/(tabs)/plans` | **Планы** — План (functional daily plan) / Задания / Цели |
 | `/(tabs)/calendar` | **Календарь** — month grid + selected-day agenda (Slice 3) |
-| `/(tabs)/records` | **Записи** — Дневник / Идеи segmented switch |
+| `/(tabs)/records` | **Записи** — Дневник (Новая запись / История) и Идеи (фильтры) |
 | `/(tabs)/finance` | **Финансы** section shell |
 | any other | `+not-found` screen with a return-to-Plans action |
 
@@ -134,25 +134,111 @@ lifecycle hook (foreground notification handler + reminder reconciliation).
   «Включить уведомления» action; denied permission shows «Открыть настройки»
   (Linking.openSettings) and never prompts repeatedly.
 
+## Records — Journal + Ideas (Slice 4)
+
+- **Дневник**: сегменты «Новая запись» / «История». Панель новой записи показывает
+  сегодняшнюю дату (локальную, фиксируется в момент открытия редактора) и реальную
+  кнопку «Написать запись»; модалка не открывается автоматически при входе.
+  История — FlatList с датой, необязательным заголовком, превью текста и
+  метаданными (настроение/теги/вложения), сортировка по дате и `createdAt`
+  (отсутствующий — после присутствующего), стабильная для совпадений.
+- **Редактор дневника** (full-screen native modal): необязательный заголовок,
+  большое ограниченное по высоте поле текста со скроллом (курсор/выделение
+  доступны даже для очень длинного текста), настроение (Спокойно, Энергично,
+  Тяжёло, Радостно — повторный тап снимает), теги через запятую. Внешний trim
+  совпадает с веб-сохранением; все внутренние переводы строк, пустые строки,
+  эмодзи и пробелы сохраняются. **Локальный текст не имеет лимита приложения**
+  (лимиты 300/60/20×40 — это правила ввода с видимыми ошибками; `maxLength` в
+  TextInput не обрезает текст).
+- **Правки полей изолированы**: валидация и нормализация применяются ТОЛЬКО к тем
+  полям, которые пользователь реально изменил. Правка тегов не трогает тело
+  (пробелы остаются байт-в-байт), правка тела не удаляет существующие пустые
+  заголовок/настроение, а легаси-значения сверх текущих лимитов (длинный
+  заголовок, длинное описание идеи) не мешают править другие поля. Правка самого
+  поля по-прежнему упирается в лимит.
+- **Контракт даты 0001–9999 применяется во ВСЕХ Records-хелперах**, а не только
+  при создании: `isSupportedRecordsDate` (валидация), `localIsoDate`/`todayIso`
+  (вывод даты, `string | null`) и `formatJournalDate`/`formatJournalFullDate`
+  (отображение, `null` вместо даты) возвращают null/отказ для года 0000 и
+  невозможных дат, поэтому ни один путь не выводит и не сохраняет «0000-01-01».
+  Ранние годы 0001/0009/0099/0100 и современные годы работают как прежде, без
+  remap 0–99 в 1900-е. Если часы устройства вне диапазона, панель новой записи
+  показывает честное сообщение вместо выдуманной даты.
+- **Контракт записи**: при создании дата проверяется по тому же диапазону,
+  коллизия сгенерированного ID отклоняется, и ни один успешный мутатор не пишет
+  байты, которые парсер не смог бы загрузить (перед записью байты проверяются тем
+  же парсером).
+- **Чтение**: полноэкранный ридер резолвит запись из committed-состояния по ID,
+  показывает настоящий текст (выделяемый, прокручиваемый), настроение, теги и
+  честную заметку о метаданных вложений (без поддельных плееров).
+- **Идеи**: категории Мысль / Хочуха / Проект / Покупка / Когда-нибудь и статусы
+  Новая / Думаю / В план / Сделано / Архив; по умолчанию Мысль/Новая; новый
+  элемент добавляется в начало, правка и смена статуса сохраняют позицию;
+  фильтры категории/статуса — только UI, с «Все» и логикой AND, повторный тап
+  возвращает «Все». Быстрая смена статуса доступна в ридере (как inline-select в
+  вебе) и не закрывает карточку. «В план» не создаёт PlanTask/Goal.
+- **Безопасность асинхронности**: одна синхронная блокировка на редактор покрывает
+  сохранение, смену статуса и удаление до первого `await` (finally-освобождение);
+  пока операция идёт, поля/кнопки/жесты закрытия отключены. Грязная отмена/back
+  подтверждается; завершение старой операции сверяется с ТЕКУЩИМ `sheetKey`, поэтому
+  не может закрыть/перевести/очистить более новый редактор (идентичность текущего
+  листа обновляется синхронно вместе с состоянием, без пассивного эффекта), а
+  отложенные подтверждения удаления/отмены перепроверяют актуальные идентичность,
+  ревизию черновика и busy-состояние перед закрытием или записью. Успешное создание
+  закрывает редактор и открывает Историю; успешная правка НЕ закрывает лист, а
+  возвращает к карточке чтения сохранённой записи и очищает поиск только если он
+  её скрывает; удаление закрывает только свою карточку.
+- **Локальные поиск и состояния**: нечёткий регистронезависимый поиск по
+  заголовку/тексту/настроению/тегам/транскриптам; отдельные loading, load-error с
+  Retry, ready-empty, filtered-empty и write-error состояния для дневника и идей
+  (повреждённый дневник не блокирует идеи и навигацию). Сегменты, режим/поиск и
+  фильтры живут выше условного рендера и переживают переключения.
+- **Опубликованные снимки неизменяемы полностью**: заморожены и сам объект
+  состояния (`phase`/`entries`/`ideas`/`saving`/`error` — их нельзя заменить или
+  изменить), и содержимое (committed-строки, массивы тегов, массивы вложений,
+  объекты метаданных и общие пустые константы). Поэтому внешняя мутация любого
+  снимка из `getSnapshot()` не меняет состояние стора, не уведомляет подписчиков,
+  не пишет в хранилище и не попадает в последующую легитимную запись.
+- **Хранение**: два независимых конверта AsyncStorage — `workazy-native-journal-v1`
+  `{ version: 1, entries, savedAt }` и `workazy-native-ideas-v1`
+  `{ version: 1, ideas, savedAt }`. Строгий структурный парсер: повреждённые
+  JSON/версия/строки/даты/таймстемпы/дубликаты ID/метаданные вложений → load-error
+  без перезаписи байтов; ретрай перечитывает только свой ключ. Запись — только через
+  полную персистенцию (persist-before-commit) с синхронным write-gate в сторе, без
+  сидов, глобального clear и доступа к ключам Plan/Calendar.
+- **Вложения — только метаданные (задел под Slice 5)**: полная схема
+  `JournalMedia` (audio/video, mimeType, sizeBytes, длительность/размеры, транскрипт,
+  статус транскрипции, таймстемпы) валидируется и сохраняется как есть, переживает
+  правки текста и неудачное удаление; строки только с метаданными читаются.
+  Свойства, несущие байты (Blob/File/ArrayBuffer/типизированные массивы/base64/
+  data-URL/URI временного воспроизведения), отклоняются явной схемой, а проза и
+  транскрипты, лишь похожие на data-URL, остаются валидными. Записи/загрузка/
+  воспроизведение/транскрибация не реализованы, кнопок медиа нет.
+
 ## Code structure
 
 ```text
 app/                      # Expo Router routes (root layout mounts calendar lifecycle)
 src/theme/                # design tokens: colors, spacing, radius, typography, shadows
 src/components/           # Screen, AppText, Card, SegmentedControl, SectionIntro
-src/types/plan.ts, calendar.ts         # mirrored web domain types
-src/storage/planStorage.ts, calendarStorage.ts  # key/envelope/parser (injected storage)
+src/types/plan.ts, calendar.ts, journal.ts, idea.ts   # mirrored web domain types
+src/storage/planStorage.ts, calendarStorage.ts, journalStorage.ts, ideaStorage.ts
+                          # key/envelope/parser (injected storage)
 src/features/plans/       # daily plan (pure model/dates/store + binding + UI)
 src/features/calendar/    # calendar (pure model/dates/store + binding + lifecycle + UI)
+src/features/journal/     # journal (pure model/selectors/store + binding + rows + sheet)
+src/features/ideas/       # ideas (pure model/store + binding + row + sheet)
+src/features/records/     # Records owner: workspace screen, date helpers, sheet policy
 src/services/notifications/            # pure contract/planner/reconciler + Expo binding
 assets/images/            # only launch/icon assets referenced by app.json
 ```
 
-Pure domain logic lives in the plan/calendar `*Model.ts`, `*Dates.ts`,
-`*Storage.ts` and `*Store.ts` modules — the ONLY modules importing AsyncStorage,
-Expo Crypto, or expo-notifications are `usePlanStore.ts`, `useCalendarStore.ts` and
-`expoCalendarNotifications.ts`. Tests import the pure chain directly with injected
-storage/clock/IDs/fake OS.
+Pure domain logic lives in the plan/calendar/journal/ideas `*Model.ts`,
+`*Dates.ts`/`*Selectors.ts`, `*Storage.ts` and `*Store.ts` modules — the ONLY
+modules importing AsyncStorage, Expo Crypto, or expo-notifications are
+`usePlanStore.ts`, `useCalendarStore.ts`, `useJournalStore.ts`, `useIdeaStore.ts`
+and `expoCalendarNotifications.ts`. Tests import the pure chain directly with
+injected storage/clock/IDs/fake OS.
 
 ## Data and backend isolation
 
@@ -161,7 +247,11 @@ storage/clock/IDs/fake OS.
 - **No Telegram**, no server reminder tick, no system-calendar integration, no
   recurrence, no push/APNs credentials. Calendar reminders use `expo-notifications`
   local scheduling only; OS delivery remains subject to user/system settings.
-- Tasks/Goals CRUD, Journal/Ideas, Finance, media/camera, and later slices remain
+- **Journal/Ideas are local-only**: text, optional title, mood and tags are stored
+  on this device (`workazy-native-journal-v1` / `workazy-native-ideas-v1`). No
+  cloud sync, no auth and no conflict resolution exist; the app never fabricates a
+  connected-cloud state.
+- Tasks/Goals CRUD, Finance, media/camera recording and later slices remain
   unimplemented.
 
 ## Visual references
@@ -170,7 +260,7 @@ Visual source of truth is the screenshot set in the repository at `references/`
 (copied from the harness bundle `/Users/oleh/Downloads/workazy-mobile-harness/references/`).
 The harness bundle must be available on this machine for a visual pass.
 
-## Current limitations (Slice 3)
+## Current limitations (Slices 1–4)
 
 - Data is local to this installation; no export/import or web-data migration yet.
 - Notification delivery is OS/subject to user settings; scheduled OS inventory is
@@ -183,10 +273,25 @@ The harness bundle must be available on this machine for a visual pass.
   timezone (DST spring-forward gap) produce no notifications; the editor refuses
   to save a gap time and an already-saved event that becomes unschedulable after
   a timezone change shows a visible warning. Past reminders are never replayed.
-- Unsaved editor drafts are not process-durable; termination during a pending
-  save is not claimed durable (successful saves restore exactly).
+- Unsaved editor drafts (Journal/Ideas included) are not process-durable;
+  termination during a pending save is not claimed durable, and there is no
+  autosave infrastructure (successful saves restore exactly).
+- **Journal local size vs. backend**: local bodies have no application cap and
+  long entries are preserved (tested at 100,000+ characters), but entries above
+  the web API's 5,000-character body limit are **not currently backend-write
+  compatible**. Any future sync must resolve this explicitly without truncating
+  local text.
+- **Media is metadata-only in Slice 4**: existing attachment metadata/transcripts
+  load and are preserved through text edits, but there is no recording, upload,
+  playback or transcription, no camera/microphone permissions and no media
+  buttons. Deleting an entry deletes it locally only — it never claims to delete
+  R2 objects.
+- Records have no reminders, no export/import and no server sync; Ideas `plan`
+  status does not create a Plan task/goal.
 - iPhone simulator/device launch, the OS notification permission prompt, actual
-  banner/sound delivery, datetimepicker interactions, and on-device restart
-  convergence are **not yet verified** on the implementation machine (only Xcode
-  CommandLineTools installed; no simulator). Do not treat Slice 3 as passed until
-  native evidence exists. See `MIGRATION_STATUS.md` for exact status.
+  banner/sound delivery, datetimepicker interactions, long-editor keyboard/
+  scroll/caret behavior, Dynamic Type/VoiceOver with a large journal entry, and
+  on-device restart convergence are **not yet verified** on the implementation
+  machine (only Xcode CommandLineTools installed; no simulator). Do not treat
+  Slices 1–4 as passed until native evidence exists. See `MIGRATION_STATUS.md`
+  for exact status.

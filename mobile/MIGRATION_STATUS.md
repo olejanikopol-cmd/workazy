@@ -590,6 +590,236 @@ dirty detection.
    recurrence, no system-calendar integration, no Telegram and no server
    reminder tick.
 
+## Slice 4 — Records: Journal + Ideas (decisions recorded before implementation, 2026-09-11)
+
+Baseline before Slice 4: HEAD `7bca37e mobile: complete slices 1-3`; tracked diff
+contained only `tasks/current-task.md` (architect's brief); mobile sources are now
+tracked (75 files), root ESLint/TypeScript exclusions committed. Baseline hashes of
+the forbidden files (Plans, Calendar, notification services, theme, types, routes,
+storage, components + root `app/`, `lib/`, `db/`, `worker/`) were captured in
+`/tmp/baseline-forbidden.txt` and `/tmp/baseline-root.txt` before editing and are
+re-compared in the Slice 4 verification table.
+
+### Domain / data decisions (Slice 4)
+
+1. **Mirror, don't merge.** `src/types/journal.ts` mirrors `JournalEntry`,
+   `JournalMedia`, `JournalMediaKind`, `TranscriptionStatus`; `src/types/idea.ts`
+   mirrors `Idea`, `IdeaCategory`, `IdeaStatus` with provenance comments and no
+   root runtime import. Two independent envelopes: `workazy-native-journal-v1`
+   `{ version: 1, entries, savedAt }` and `workazy-native-ideas-v1`
+   `{ version: 1, ideas, savedAt }`. No generic merged Record model.
+2. **Text protection over transport caps.** Journal bodies have NO application
+   cap (the web editor has none; only the POST/PATCH/state APIs cap at 5,000).
+   Long local entries are preserved (tested at ≥100,000 characters) and the
+   README/status documents that >5,000-character entries are not currently
+   backend-write compatible. Title (optional, ≤300 on change), mood (≤60 on
+   change) and tags (≤20 tokens × ≤40 chars) are input rules with visible errors;
+   TextInput has no `maxLength` truncation.
+3. **Trim exactly like the web save.** New/changed title and body are
+   outer-trimmed; every internal newline, blank line, emoji, combining sequence
+   and internal space is preserved byte-for-byte. Snapshot parsing is structural:
+   legacy longer text, unknown moods, empty strings and legacy long tag arrays are
+   loaded and preserved without rewriting; only changed fields are re-validated.
+4. **Media: metadata only, never fabricated.** Full `JournalMedia` metadata
+   schema is validated (types/enums, finite non-negative `sizeBytes`, positive
+   optional duration/dimensions, canonical timestamps, unique IDs, association to
+   the parent entry) and preserved exactly through text edits and failed deletes.
+   Byte-bearing attachment properties (Blob/File/ArrayBuffer/typed arrays/base64/
+   data-URL/file or temporary-playback URI fields) are rejected explicitly, while
+   prose/transcripts that merely resemble a data URL stay valid. No media buttons,
+   no players, no upload/transcription/R2/D1 wiring, no camera/mic permissions.
+5. **Ideas keep live semantics.** Categories `thought|want|project|purchase|someday`
+   and statuses `new|thinking|plan|done|archive` with the web labels; defaults
+   thought/new; stored order preserved (new prepend; edit/status change keeps
+   position); both filters are UI-only with «Все» and AND semantics; `plan` never
+   creates a PlanTask/Goal. Timestamps are required and strictly canonical UTC
+   (not the web Ideas `todayIso()` date-only metadata).
+6. **Native-safe async policy (shared under `src/features/records/`).** One
+   synchronous sheet lock per editor covers save AND delete before any await with
+   `finally` release; the store keeps its own synchronous write gate; completion
+   is applied only to the CURRENT sheet identity captured synchronously at open,
+   so an old async completion can never close/redirect/clear a newer editor.
+   Dirty-close protection covers every field; deletion confirms natively.
+7. **UI ownership.** Segment, Journal mode/search and Ideas filters live in
+   `RecordsScreen` above conditional feature rendering so session selections
+   survive switching; the Records route keeps a single list-level scroll owner
+   (no outer ScrollView around FlatLists). Restart defaults to Journal/New entry.
+8. **Deferred to Slice 5+ (not stubbed):** recording, camera/mic permissions,
+   upload, transcription, playback, R2/D1, sync/auth, export/import, Records
+   reminders, Finance, Goals.
+
+
+### Verified status (Slice 4) — Records: Journal + Ideas, 2026-09-11
+
+Slop prepared only `tasks/current-task.md`; implementation ran in one autonomous
+pass and stopped before Slice 5.
+
+**Files added**
+
+- `src/types/journal.ts`, `src/types/idea.ts` (mirrored domain + envelope types).
+- `src/storage/journalStorage.ts`, `src/storage/ideaStorage.ts` (keys, strict
+  parser/serializer, cloning, explicit media metadata schema).
+- `src/features/journal/`: `journalModel.ts`, `journalSelectors.ts`,
+  `journalStore.ts`, `useJournalStore.ts`, `JournalEntryRow.tsx`,
+  `JournalSheet.tsx`.
+- `src/features/ideas/`: `ideaModel.ts`, `ideaStore.ts`, `useIdeaStore.ts`,
+  `IdeaRow.tsx`, `IdeaSheet.tsx`.
+- `src/features/records/`: `recordsDates.ts`, `recordsSheetGuard.ts` (lock,
+  completion policy, dirty detection).
+- Tests: `journal-model`, `journal-storage`, `journal-store`, `idea-model`,
+  `idea-storage`, `idea-store`, `records-sheet-guard` (`.test.mjs`).
+
+**Files changed**
+
+- `src/features/records/RecordsScreen.tsx` (real workspaces replace the intro
+  stub; segment/mode/search/filters/sheet identity owned here).
+- `mobile/README.md`, `mobile/MIGRATION_STATUS.md`.
+
+**No other file changed**: Plans, Calendar, notification services, theme, existing
+`src/types/plan.ts`/`calendar.ts`, storage for Plan/Calendar, components, routes,
+`app.json`, `package.json`/lockfile and root `app/`/`lib/`/`db/`/`worker/` are
+byte-identical to the pre-Slice-4 baseline.
+
+**Working flows delivered**
+
+1. Journal: Новая запись / История; the new-entry panel shows today's device-local
+   date and opens a full-screen editor on demand (never auto-opened); the date is
+   captured when the editor opens and cannot move afterwards.
+2. Journal create/edit/delete with persist-before-commit (a successful create
+   closes the editor and reveals History; a successful edit keeps the sheet on the
+   saved entry's reader; delete closes only that sheet), dirty-close protection
+   (all four fields, raw tag input included), synchronous busy lock shared by
+   save and delete, guarded completion by sheet identity, and failure handling
+   that keeps the draft and the committed state.
+3. Journal reader resolves the entry from committed state by ID and renders the
+   real body (selectable, scrollable), plus mood/tags/attachment-metadata note.
+4. History ordering (date desc, `createdAt` desc with missing last, stable ties),
+   local search across title/body/mood/tags/transcripts, empty vs no-match states,
+   and open-by-ID from the current snapshot.
+5. Ideas: create/read/edit/delete of title, description, category and status;
+   defaults Мысль/Новая; quick status change in the reader; category/status filters
+   with «Все» + AND semantics; stored order preserved (new prepend); «В план»
+   creates no Plan task/goal; archive stays reachable.
+6. Independent per-domain phases (loading / load-error + Retry / ready-empty /
+   filtered-empty / write-error); a corrupt journal cannot block Ideas or
+   navigation because the header stays mounted.
+
+**Text and media decisions as implemented**
+
+- Journal body: outer trim only; every internal newline/blank line/space/emoji
+  preserved; NO application cap (asserted with a >100,000-character Cyrillic +
+  emoji + combining-character body through add → bytes → restart → unrelated edit
+  → restart). >5,000 characters are documented as not backend-write compatible.
+- Title optional (≤300 on change), mood optional (≤60 on change, unknown stored
+  values preserved), tags comma-parsed with 20×40 input limits; untouched stored
+  tags are preserved verbatim (legacy long arrays and comma-containing tokens).
+- Media metadata: full schema validated/preserved, byte-bearing/unknown attachment
+  keys rejected explicitly, data-URL-like prose and transcripts accepted, empty
+  bodies allowed for media rows, text-only rows cannot be cleared.
+
+**Verification (Slice 4) — actual results**
+
+| Check | Result |
+| --- | --- |
+| `npm test` | **223/223 pass** (130 baseline + 93 new) |
+| `TZ=Europe/Kyiv npm test` | **223/223 pass** |
+| `TZ=America/Los_Angeles npm test` | **223/223 pass** |
+| `TZ=UTC npm test` | **223/223 pass** |
+| `npm run typecheck` | exit 0 |
+| `npm run lint` (`expo lint`, app sources) | exit 0, **0 problems** |
+| `npx eslint .` (includes `tests/`) | 0 errors, **3 warnings** — all pre-existing in Slice 2/3 test files; every warning introduced by Slice 4 was removed |
+| `npx expo install --check` | Dependencies are up to date |
+| `npx expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | ok — `dist/_expo/static/js/ios/entry-6b47956d….hbc` |
+| Root `npm run build` | Build complete; DB, MEDIA, migrations 0000/0001/0002 packaged |
+| `git diff --check` | clean |
+| Runtime leakage scan (`telegram\|TELEGRAM_\|localStorage\|window\.\|document\.\|navigator\.\|MediaRecorder\|next/\|cloudflare:\|@/lib/\|fetch(\|axios\|expo-camera\|expo-audio\|expo-av` on `mobile/app mobile/src`) | no matches |
+| Forbidden-file baseline (`find … \| xargs shasum` diff) | only new Records files added; **no existing Plans/Calendar/notifications/theme/components/route/storage/type file modified** |
+| Root web baseline (`app/`, `lib/`, `db/`, `worker/` hashes) | unchanged |
+| `mobile/package.json` + lockfile + `app.json` | unchanged (no dependency, plugin or permission added) |
+
+**Slice 4 review fixes (2026-09-11) — actual guarantees**
+
+1. **Untouched fields are preserved exactly.** The editors now send per-field
+   change flags (`JournalEntryInput.changed` / `IdeaInput.changed`); the models
+   validate and normalize ONLY those fields. A tag-only edit no longer trims the
+   untouched body, a body-only edit no longer touches an existing (possibly
+   present-but-empty) title/mood, and legacy overlength titles/descriptions or
+   legacy tag arrays no longer block an unrelated edit. Editing a field itself
+   still enforces its current limit. Regressions cover each of those cases
+   (journal model + idea model).
+2. **No mutation can write a snapshot the app cannot reload.** Journal creation
+   validates the written date against the shared 0001-9999 contract
+   (`recordsDates.isSupportedRecordsDate` / `MIN_PLANNER_YEAR = 1`; year 0000 and
+   impossible dates rejected), a generated-ID collision fails safely
+   (`duplicate-id`, zero writes), and `commit` verifies the exact bytes with the
+   SAME parser hydration uses before writing (`invalid-snapshot`, zero writes).
+   Regressions: `0000` date rejected with zero writes; duplicate ID rejected with
+   the bytes untouched; every successful mutation re-parses and a brand-new store
+   hydrates it; early years 0001/0009/0099/0100 persist and reload. (Ideas have no
+   date field in the native model; their required canonical UTC timestamps plus
+   the same byte-verification guard cover the equivalent risk.)
+3. **Sheet identity is synchronous and delayed confirmations are re-checked.**
+   `RecordsScreen` updates the current sheet identity in the same call that
+   changes the state (`commitSheet`), never through a passive effect, and every
+   `onClose` is keyed. The editors re-check CURRENT identity, draft revision and
+   busy state (`allowDelayedConfirmation`) inside the discard/delete confirmation
+   callbacks before closing or mutating, so a confirmation opened for sheet A can
+   neither close nor mutate anything once B is current. Regressions simulate A→B
+   replacement for both discard and delete, plus the busy and changed-draft
+   refusals.
+4. **Published snapshots are protected from external mutation.** Both stores
+   publish deep-frozen structures (rows, journal tag arrays, media arrays and
+   nested media/transcription objects) and freeze the shared empty constants (a
+   leaked `push` into the empty list previously polluted other instances).
+   Regressions mutate a returned body/tags/media/idea, assert the throw, and then
+   verify committed state is unchanged, no subscriber notification happened, no
+   storage write occurred, and a later legitimate mutation does not persist the
+   attempted change.
+5. **Lint truth.** All warnings introduced by Slice 4 are fixed (unused
+   `serializeSnapshot`, `JOURNAL_STORAGE_KEY`, `gate`, `SAVED_AT` in the new
+   tests). `npm run lint` reports 0 problems; `npx eslint .` (which also lints
+   `tests/`) reports 3 warnings that already existed in the Slice 2/3 test files
+   and were deliberately left untouched to keep the baseline tests unchanged.
+
+6. **The 0001-9999 year contract now covers EVERY records date helper.**
+   `recordsDates.ts` exports `MIN_PLANNER_YEAR = 1` / `MAX_PLANNER_YEAR = 9999`
+   and enforces the range on derivation and display as well as validation:
+   `localIsoDate`/`todayIso` return `string | null` (a year-0000 instant yields
+   null, never `"0000-01-01"`) and `formatJournalDate`/`formatJournalFullDate`
+   return null for unsupported/invalid input instead of rendering it. Call sites
+   handle null explicitly (the row hides the date, the reader uses a neutral
+   label, and the new-entry panel shows an honest out-of-range-clock message
+   instead of a fabricated date). Regression tests drive every helper path:
+   year 0000 rejected through derivation AND formatting, 0001/0009/0099/0100 and
+   modern dates unchanged, no 0-99 remap (`0001-01-01` renders as
+   «Понедельник, 1 января»), and the 9999 upper bound enforced.
+7. **The published snapshot WRAPPER is frozen too.** Both stores now freeze the
+   top-level state object (initial pre-hydration state included) through a single
+   `makeState()` used by the initial value and by every `publish()`, on top of the
+   already deep-frozen rows/tags/media. External `snapshot.entries = …`,
+   `snapshot.ideas = …`, `snapshot.phase = …`, `snapshot.saving = …` and
+   `snapshot.error = …` all throw and cannot alter the published view.
+   Regressions use the real stores: mutation attempts throw, `getSnapshot()`
+   returns the unchanged view, zero subscriber notifications, zero storage
+   writes, a later legitimate mutation persists only the legitimate change (no
+   wrapper fields leak into the envelope), initial empty wrappers are protected,
+   and separate store instances cannot poison shared constants.
+
+**Slice 4 remaining limitations and pending acceptance**
+
+- Local-only data; no export/import, no sync/auth, no conflict handling.
+- Journal bodies above the web API's 5,000-character transport cap are not
+  backend-write compatible; a future sync must resolve this without truncation.
+- Media is metadata-only: no recording, upload, playback or transcription, no
+  camera/microphone permissions and no media affordances (Slice 5).
+- Unsaved drafts are not process-durable; there is no autosave.
+- Local deletion never claims remote (R2) deletion.
+- Native/keyboard/visual acceptance is **PENDING**: long-editor keyboard + caret
+  behaviour, bounded-scroll ergonomics, Dynamic Type/VoiceOver with a 100k entry,
+  safe areas on compact/notched devices, on-device restart after a confirmed save.
+  Pure tests, export success and simulated timings are NOT device evidence.
+
 ### iPhone verification status (all slices)
 
 **Native launch/notification delivery/visual/VoiceOver acceptance PENDING** on all
@@ -598,8 +828,8 @@ slices — the machine has only Xcode CommandLineTools:
 - `xcodebuild -version` -> error: "requires Xcode"
 - `xcrun simctl list devices` -> error: "unable to find utility 'simctl'"
 
-Exporting the iOS bundle/unit tests do not prove rendered native behavior or OS
-notification delivery. Manual acceptance (cold launch to Plans, four tabs, Plans
+Exporting the iOS bundle/unit tests do not prove rendered native behavior, OS
+notification delivery, or Records keyboard/scroll/VoiceOver behavior. Manual acceptance (cold launch to Plans, four tabs, Plans
 segments/Today–Tomorrow/completion/order/storage, calendar month/day navigation,
 strokes, safe areas on notched/compact iPhones, larger text/VoiceOver, no
 unsolicited permission prompt, permission grant/deny, near-future reminder
@@ -611,17 +841,20 @@ No fabricated screenshots or notification evidence.
 ### Reused concepts vs. deferred code — summary
 
 Reused concepts: product section inventory, domain naming from `lib/types.ts`
-(PlanTask -> `src/types/plan.ts`, CalendarEvent -> `src/types/calendar.ts`;
-Assignment, Goal, JournalEntry, JournalMedia, Idea, finance types remain web-side),
-visual tokens from `app/globals.css` + references, device-local date semantics from
-the web planner, web reminder semantics (parseReminderMinutes) mirrored without
-importing the scheduler or timezone defaults.
+(PlanTask -> `src/types/plan.ts`, CalendarEvent -> `src/types/calendar.ts`,
+JournalEntry/JournalMedia/Idea -> `src/types/journal.ts`/`src/types/idea.ts`;
+Assignment, Goal and finance types remain web-side), visual tokens from
+`app/globals.css` + references, device-local date semantics from the web planner,
+web reminder semantics (parseReminderMinutes) mirrored without importing the
+scheduler or timezone defaults, web journal trim/tag/mood/search semantics and the
+live Ideas labels/statuses/moods from `app/secondary-screens.tsx`, plus the journal
+search provenance (`entrySearchText`) without importing the browser module.
 
 Deferred (later slices, not stubbed): Tasks/Goals CRUD, historical-date/history UI,
 moving a plan item to another date, export/import and web-data migration, API
 client and credentials, onboarding, settings UI, system-calendar integration,
-recurrence, journal/ideas feature code, audio/video/camera recording and upload,
-finance calculations, Journal/Finance/Goals feature code.
+recurrence, media recording/upload/transcription/playback, finance feature code,
+Records reminders, and AI.
 
 ### Remaining blockers (consolidated)
 
@@ -632,17 +865,23 @@ finance calculations, Journal/Finance/Goals feature code.
    unrelated to Slices 1–3; not fixed to avoid scope creep. Root web files were
    not changed by the mobile slices.
 3. Launch/icon assets are Expo placeholders until production assets exist.
-4. Data is local to one installation; no export/import; unsaved editor drafts are
-   not process-durable. Notification capacity is an app policy (max 48 pending);
-   OS delivery is subject to user/system notification settings.
+4. Data is local to one installation; no export/import; unsaved editor drafts
+   (Plan, Calendar, Journal, Ideas) are not process-durable. Notification capacity
+   is an app policy (max 48 pending); OS delivery is subject to user/system
+   notification settings.
+5. Journal bodies have no local cap but are not backend-write compatible above
+   the web API's 5,000-character limit; media is metadata-only (no recording,
+   upload, playback or transcription) and local deletion never claims remote
+   deletion.
 
 ### Subsequent slices (all pending)
 
-- Slice 4 — Journal + Ideas.
-- Slice 5 — Native audio/video recording and upload.
-- Slice 6 — Finance.
-- Slice 7 — Polish, onboarding, accessibility, visual acceptance.
+- Slice 4 — Journal + Ideas. **Delivered** (local text/CRUD, history/search,
+  filters, metadata-only media schema); native acceptance still pending.
+- Slice 5 — Native audio/video recording and upload (not started).
+- Slice 6 — Finance (not started).
+- Slice 7 — Polish, onboarding, accessibility, visual acceptance (not started).
 
-Do not treat Slices 1–3 as passed until the iPhone acceptance items above are
+Do not treat Slices 1–4 as passed until the iPhone acceptance items above are
 completed on hardware/simulator. This file records actual results; pending items
 must not be relabeled as verified.

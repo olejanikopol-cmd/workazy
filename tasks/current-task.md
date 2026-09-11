@@ -1,218 +1,162 @@
-# Slice 3 — Native Calendar and local notifications
+# Slice 4 — Native Records: text Journal + Ideas
 
-Implementation brief for **DeepSeek**, prepared 2026-09-10. Implement this slice only, in one autonomous pass. This document replaces the completed Slice 2 brief; it does not authorize later migration slices.
+Implementation brief for **DeepSeek**, prepared 2026-09-11 after Slice 3 review approval. Implement this slice only, in one autonomous pass; stop before Slice 5. This replaces the completed Calendar brief. The architect changes only this file; product code and migration status are unchanged by preparation.
 
-## Objective and baseline
+## Objective, baseline and allowed changes
 
-Build the Calendar tab's month/day workspace, local CalendarEvent CRUD and reliable iPhone local reminders. Preserve the existing domain contract and all Slice 1/2 behavior. No backend, authentication, web-data import, Telegram, server reminder tick, remote push tokens, secrets, system-calendar integration, recurrence, custom sounds, notification inbox, notification deep links, Journal, Finance, Goals, Assignments or media work.
+Build Journal and Ideas inside the existing Records tab. Preserve four tabs, Plans behavior/storage, Calendar CRUD/notifications/lifecycle, theme and route defaults. The root route still redirects to /(tabs)/plans; never restore invalid initialRouteName="plans".
 
-Repository: `/Users/oleh/workazy/workazy`. The real web app remains at root `app/`, `lib/`, `db/`, `worker/`; the native app is the independent `mobile/` package. Do not regenerate its scaffold or turn the root into a workspace. Existing tracked root changes are only the mobile TypeScript exclusion and ESLint ignore; preserve them. Many harness/mobile files are untracked: record their contents as well as git status when establishing the baseline.
+Observed baseline: independent mobile/ package; Expo ~57.0.22, Router ~57.0.21, React 19.2.3, RN 0.86.3; AsyncStorage 2.2.0 and Expo Crypto already installed. Slice 3 re-review passed 130 tests in default/UTC/Kyiv/Los Angeles, typecheck and lint (zero errors, three unused-variable warnings). Native acceptance for Slices 1–3 remains pending. These are baseline results, not Slice 4 results. Root tracked diff contains only the mobile ESLint/TypeScript exclusions; mobile and harness files remain untracked.
 
-Observed native versions: Expo 57.0.21, Router 57.0.20, React 19.2.3, RN 0.86.3, TypeScript 6.0.3; AsyncStorage 2.2.0 and Expo Crypto already installed. Slice 2's final reported checks are 34 passing tests, including Kyiv/Los Angeles runs, typecheck/lint/iOS export and Expo checks. Re-run rather than assume. iPhone acceptance remains pending: only Xcode CommandLineTools was available. The unchanged root Telegram workflow assertion failure is pre-existing.
+Before implementing, record git status and hashes of existing files, including untracked native files. Update mobile/MIGRATION_STATUS.md with decisions, then actual implementation results. Allowed implementation changes: Journal/Ideas types, storage, features and tests under mobile/; mobile/src/features/records/RecordsScreen.tsx and small Records-specific helpers; mobile/README.md and mobile/MIGRATION_STATUS.md. Change the Records route only if wiring requires it. Package/lockfile changes need a concrete reason; no packages are expected. Do not change Plans, Calendar, notification services/tests, global theme/navigation/config, root web/API/DB/worker/Telegram code, or regenerate the scaffold.
 
-Navigation: exactly four tabs, Plans/Calendar/Records/Finance; `/` redirects to `/(tabs)/plans`. Never restore invalid `initialRouteName="plans"`. Plans has three reachable segments, stable Today/Tomorrow selection and durable completion/order; leave its implementation and storage key untouched.
+## Read and reuse conceptually
 
-## Read before coding — exact sources
+Read MASTER_PROMPT.md, HARNESS.md, AGENTS.mobile.md, MOBILE_ARCHITECTURE.md, DESIGN_SYSTEM.md, tasks/mobile-migration.md, this brief, mobile README/status and references. This bounded brief overrides broader instructions to continue the migration.
 
-- `AGENTS.md`, `MASTER_PROMPT.md`, `HARNESS.md`, `AGENTS.mobile.md`, `MOBILE_ARCHITECTURE.md`, `DESIGN_SYSTEM.md`, `tasks/mobile-migration.md`, this brief, `mobile/README.md`, `mobile/MIGRATION_STATUS.md`.
-- `lib/types.ts`: CalendarEvent versus PlanTask/Assignment.
-- `app/secondary-screens.tsx`: `CalendarScreen` (currently lines 624–681); month starts Monday, event fields/defaults and additional reminder choices.
-- `app/planner-app.tsx`: Calendar state ownership, selected date and rendering; `lib/planner-data.ts`: local calendar formatting; `lib/planner-storage.ts`: web snapshot only, no native import.
-- `app/api/v1/events/route.ts`, `app/api/v1/events/[id]/route.ts`, `app/api/v1/state/route.ts`: Calendar validation and serialization; `lib/planner-api.ts`: event mapping; `db/schema.ts`: event representation.
-- `lib/reminder-scheduler.ts`: `parseReminderMinutes`, `calendarEventStartsAt`, `calendarEventDueAt`, calendar branch of `collectDueTelegramNotifications`; `tests/telegram-reminder.test.mjs`: event-time plus advance behavior and timezone cases. `app/api/v1/reminders/tick/route.ts` is context only, never a dependency.
-- `mobile/app/_layout.tsx`, `mobile/app/index.tsx`, `mobile/app/(tabs)/_layout.tsx`, `mobile/app/(tabs)/calendar/index.tsx`.
-- `mobile/src/features/calendar/CalendarScreen.tsx` (currently a shell).
-- All current files in `mobile/src/features/plans/`, `mobile/src/storage/planStorage.ts`, `mobile/src/types/plan.ts`, and the four `mobile/tests/plan-*.test.mjs` files. Study hydration, immutable subscriptions, persist-before-commit, busy locks, captured draft dates, sheet identity guards, foreground/focus/timer refresh and the final UTC timestamp fix. Reuse patterns without refactoring Plans.
-- `mobile/src/components/{Screen,AppText,Card,SegmentedControl,SectionIntro}.tsx`; `mobile/src/theme/{colors,spacing,radius,typography,shadows,index}.ts`.
-- `mobile/package.json`, `mobile/package-lock.json`, `mobile/app.json`, `mobile/tsconfig.json`, `mobile/eslint.config.js`, `mobile/node_modules/expo/bundledNativeModules.json`.
+Inspect these sources before coding:
 
-## Calendar domain and UI decisions
-
-Mirror the web type in `mobile/src/types/calendar.ts`, with provenance comment and no runtime import from root:
-
-```ts
-export type CalendarEvent = {
-  id: string;
-  title: string;
-  date: string;       // local calendar date YYYY-MM-DD
-  time?: string;     // local wall-clock HH:mm; absent means untimed
-  note?: string;
-  reminder?: string; // existing human-readable domain value
-  createdAt?: string;
-  updatedAt?: string;
-};
-```
-
-No completion, Assignment dueDate, duration, timezone, persisted row number or notification ID fields on CalendarEvent. Keep notification bookkeeping in the storage envelope separately.
-
-- Native month grid: Monday first, previous/next month, actual today marker, selected day and event dots; blank cells are not actionable. Explicit Today returns to the current month/day. Cold launch selects today. Month arrows select day 1 of the destination month; a day tap selects that date. Retain month/selection across tab switches in the session. Midnight refresh updates the today marker without moving an explicitly selected date. No persisted UI preferences required.
-- Selected-day agenda: timed events ascending HH:mm, untimed last, equal times in stored array order. Append new events; edits preserve identity/array position; derived sorting never rewrites stored order. No numbered PlanTask treatment.
-- Tap an event to read full title/note and edit or delete with native confirmation. Editor has title, date, optional exact minute time, note and additional-reminder choices. Date changes move the event to that day's agenda. Saving keeps the calendar on the saved event's day/month.
-- Use SDK-compatible `@react-native-community/datetimepicker` for date/time, with a separate “Без времени” toggle. Store date/time strings, never picker Date objects. Use device timezone and 24-hour display where supported. New event defaults: captured selected date, 18:00, “За 30 минут”; existing event fields remain intact. Untimed events have no notification.
-- New/edit title: trim outer whitespace, 1–300 characters; note optional, outer trim, maximum 1000. Preserve internal newlines. Reject overlength edits visibly, never truncate. Existing structurally valid long strings remain loadable/readable; edits must satisfy input limits. New IDs are `event-${Crypto.randomUUID()}`, injected in pure tests and generated once per submission. Preserve createdAt on edit; update updatedAt using a canonical UTC ISO timestamp.
-- Preserve actual web reminder semantics: every timed event gets an event-time alert; optional advance is 10, 30 or 60 minutes. UI strings remain “За 10 минут”, “За 30 минут”, “За 1 час”, “Только в момент события”. Last choice means exactly one event-time notification. Explain this in native copy without mentioning Telegram.
-- Pure reminder parser retains existing recognition of minute/hour/day strings capped at 10080 minutes; missing/empty/“Не напоминать”/unrecognized reminder means no *additional* alert, consistent with the current web scheduler. Preserve unknown stored strings on load and unchanged edits; do not silently rewrite them. Do not reinterpret these legacy values as disabling the event-time alert. No freeform reminder input or recurrence UI.
-
-## Date and timezone contract
-
-Use device-local floating calendar dates/times, consistent with the planner UI. Do not inherit the server's configured Europe/Kyiv default or import its scheduler. A device timezone change keeps the stored date and clock time and changes the derived notification instant on the next app reconciliation.
-
-- Strictly validate real date components and HH:mm (00:00–23:59). Support years 0001–9999 in helpers without JavaScript's constructor remapping of years 0–99. Use calendar arithmetic for month/day navigation, not milliseconds-per-day or `toISOString().slice(0,10)`.
-- Resolve wall time with local Date component setters/constructors and check the resulting local components exactly. A nonexistent DST time is a validation error on save, never silently shifted. Previously stored events that become nonexistent after a timezone change stay readable and editable; show an unscheduled-time warning and cancel their old pending requests rather than rejecting the entire snapshot.
-- For ambiguous fall-back wall times, choose the earlier occurrence (JavaScript compatible local Date behavior) and test/document that policy. Do not schedule two occurrences.
-- Advance reminders subtract elapsed minutes from the resolved event instant, including across midnight/DST. Derive one-shot absolute triggers from these instants.
-- Schedule only instants strictly later than the injected current clock; recheck immediately before scheduling. If the advance has passed but the event is future, schedule only the start. Past events remain valid stored data, with no immediate/catch-up/repeating alert. Never use a null trigger as a fallback.
-- UTC metadata validation is independent of local timezone: strict canonical `YYYY-MM-DDTHH:mm:ss.sssZ`, finite parse and `new Date(parsed).toISOString() === input`. Under Europe/Kyiv accept `2026-03-29T03:30:00.000Z`; reject `2026-02-30T12:00:00.000Z`. Preserve Slice 2's tests and implementation unchanged.
-- A small root-mounted lifecycle hook hydrates Calendar and reconciles on startup, foreground and a cleaned-up 60-second active-app recheck. Calendar focus also refreshes today and requests reconciliation. Coalesce concurrent calls; no interval work while backgrounded and no background JS service. Recompute future targets so clock/timezone changes are detected even if today's date is unchanged. Never reload persisted event data over current state on focus.
-- Absolute OS requests cannot be corrected while the app is terminated after a timezone change. Document that they are corrected on the next launch/foreground; do not claim background timezone tracking.
-
-## Durable storage and operation ownership
-
-Use existing AsyncStorage with only **`workazy-native-calendar-v1`**. Never read/write/delete `workazy-native-plan-v1` or browser storage. One envelope and one feature store; no new state framework or database.
-
-```ts
-type CalendarNotificationRecord = {
-  eventId: string;
-  kind: 'start' | 'advance';
-  identifier: string;
-  fingerprint: string; // stable signature of intended instant and displayed content
-  triggerAt: string;   // canonical UTC ISO
-};
-type CalendarSnapshotV1 = {
-  version: 1;
-  events: CalendarEvent[];
-  notificationRecords: CalendarNotificationRecord[];
-  savedAt: string;
-};
-```
-
-Records are a durable registry of notification IDs that may exist in the OS, **not proof of successful scheduling**. Records referencing deleted events are valid cleanup tombstones. Registry fingerprints may temporarily describe older event revisions; that is recoverable, not snapshot corruption.
-
-Parser validates the whole envelope, unique nonempty event IDs, real date/time formats, string field types, UTC metadata, registry kind/ID/instant/signature shapes and unique notification identifiers. IDs must belong to the specified Calendar namespace. Do not reject a valid date/time string merely because it is a DST gap in the current timezone. Unknown version, malformed JSON or invalid rows => load-error, original bytes untouched, mutations and OS reconciliation blocked, Retry available. Missing key => ready empty state. No seed events, silent repair, migration from Plans or reset button.
-
-Use a pure `createCalendarStore` factory with injected key/value storage, clock, ID generator and notification adapter. Native binding creates one singleton; subscribe with cached immutable snapshots and `useSyncExternalStore`. Hydration coalesces and is idempotent. No pre-hydration autosave or React updater side effects.
-
-A single synchronous operation lock covers user mutations and registry/reconciliation writes. UI disables mutation controls while busy; overlapping user submissions return typed busy without side effects. Lifecycle requests coalesce for one follow-up pass after the lock releases. Always release in finally. No two independent writers of the envelope.
-
-Persist the desired event mutation **before** publishing it or touching the OS. Failed primary storage write leaves committed events/registry and OS unchanged and preserves editor draft. After successful event persistence, notification failure must not roll the event back or encourage a second Add: return an explicit saved-with-notification-warning result, keep a visible retry status on Calendar. Successful deletion removes the event durably but retains its registry until cancellation is confirmed. If cancellation fails, say that an old reminder may still fire and offer Retry; do not claim full cancellation success.
-
-## Notification adapter and reconciliation
-
-Use `mobile/src/services/notifications/` with a pure contract and reconciler separate from the Expo binding. Contract covers permission query/request, list pending requests, schedule a request with an explicit identifier, and cancel one identifier; inject fake implementations for tests. Do not build a general multi-domain notification framework.
-
-Install inside mobile with `npx expo install expo-notifications @react-native-community/datetimepicker`; the installed Expo SDK currently lists notifications `~57.0.17` and datepicker `9.1.0`. Keep framework versions. Add their config plugins as required by installed documentation; no push setup, APNs credentials, background modes or EAS project required for this local-only feature.
-
-API reference, checked during brief preparation: [Expo SDK 57 Notifications](https://docs.expo.dev/versions/v57.0.0/sdk/notifications/). Use `getPermissionsAsync`, `requestPermissionsAsync`, `getAllScheduledNotificationsAsync`, `scheduleNotificationAsync` and `cancelScheduledNotificationAsync`. Schedule explicit `identifier` with `{ type: Notifications.SchedulableTriggerInputTypes.DATE, date: new Date(epochMs) }`. Check returned identifier. Set a foreground handler once using `shouldShowBanner`, `shouldShowList`, `shouldPlaySound`, `shouldSetBadge`; avoid deprecated `shouldShowAlert`. Interpret iOS authorization status, including provisional authorization, rather than only generic permission status. Confirm signatures against installed types. Never copy remote-token examples from the docs.
-
-Implement this bounded reconciliation protocol:
-
-1. After valid hydration, list OS requests and read current permission without prompting. Compute desired future start/advance requests from committed events and current local timezone.
-2. Use deterministic identifiers `workazy.calendar.v1:<eventId>:<kind>` and ownership metadata `{ owner: 'workazy-calendar-v1', eventId, kind, fingerprint }`. Encode eventId safely if needed, consistently in validation and generation. Notification title is Workazy, body contains the event title/time; exclude note and never log user text. Fingerprint includes trigger instant, event title/time and kind so title-only edits update content.
-3. Persist a registry record **before** first scheduling its ID. For changed requests, cancel the old ID and confirm its absence before scheduling the replacement with the same deterministic ID. If cancellation fails, stop replacement for that ID and expose retry. Do not generate a fresh UUID for every retry.
-4. Compare desired requests against OS pending inventory, not registry alone. Matching inventory is a no-op. Missing future requests are scheduled; obsolete requests for edited/deleted/untimed/past events are cancelled. Owned orphan requests absent from the registry (crash recovery) are discovered through namespace plus ownership metadata and cancelled or adopted to match desired data. Never cancel another feature's requests or call cancelAll.
-5. After scheduling, verify the returned ID and pending request. Keep sufficient registry information until successful cleanup is confirmed; only then remove obsolete records with another durable envelope write. A metadata write failure must not lose event data or cause duplicate retries. Never erase a tombstone before confirmed cancellation.
-6. OS and AsyncStorage cannot transact together: cover crashes after event commit, after registry write, after cancel and after schedule. On restart, current events plus durable registry plus owned OS inventory must converge. No persisted “scheduled=true” shortcut. Inventory/list failure is a visible retryable error; do not blindly schedule or discard IDs.
-7. Use a deliberate bounded queue: schedule the earliest **48** future Calendar requests ordered by instant/eventId/kind, reduced to keep total pending requests at most 48 when unrelated requests exist. This is an app policy, not a claimed universal OS limit. Cancel owned requests outside this window; preserve all events. Clearly show when later reminders are not yet scheduled because of capacity and retry/refill on lifecycle reconciliation. No silent dropping or promise of unlimited reminders while the app stays closed. Unit-test the boundary. Do not implement a background refill service.
-8. A reminder already delivered is not recalled by deleting an event. Never reschedule past triggers as immediate alerts. Repeated reconciliation must converge without cancel/reschedule churn of unchanged future requests. OS delivery remains subject to user/system notification settings; scheduled inventory is not evidence of delivery.
-
-## Permission flow and native UI safety
-
-- No startup/focus OS prompt. Calendar shows a compact contextual “Включить уведомления” action when needed; explain that events save locally regardless. Explicit user action requests alerts/sound (no badges, critical alerts or provisional request). Provisional authorization, if encountered, is usable but labeled quiet delivery.
-- Denied or cannotAskAgain: retain events, show reminders unavailable and offer React Native `Linking.openSettings()` with error handling. No repeated prompting, fake success or browser navigation. Returning foreground rechecks permission and reconciles. Revoked permission cancels owned pending requests where possible and retains cleanup IDs until confirmed; granting later schedules only future targets.
-- Register foreground presentation at the root so alerts work while Plans is selected; keep existing theme, Stack and status bar unchanged. Root initialization must not block navigation if Calendar load/notifications fail. Tapping a notification may perform the OS default app launch; event deep-linking is explicitly deferred.
-- Reuse existing Workazy components/tokens. Month grid and agenda use one vertical scrolling surface (e.g. FlatList with header), never nested same-axis scroll lists. Preserve safe-area/tab insets and all four tabs. No Calendar library or app-wide styling changes.
-- Editor is a native full-screen Modal with its own safe areas, keyboard avoidance, scrollable fields and reachable Save/Cancel. Capture date and draft identity at open. Guard dirty dismissal/Android back; no unguarded swipe loss. Lock fields/close while save is pending; only a completion for the same sheet identity/revision may close it. Error retains full draft; notification warning after durable save must not leave an apparently unsaved Add form.
-- Minimum 44pt interactive targets, scaled text, Russian accessible labels, selected date/state and event-count descriptions. Today versus selected uses more than color alone. Fit seven day targets on compact iPhone by reducing horizontal padding, not hit size; avoid fixed-height clipping with large text. Loading, corrupt data, empty day, pending scheduling and failure are distinct states.
-
-## Exact allowed files
-
-Edit existing files only:
-
-| File | Scope |
+| Source | Product truth and decision |
 | --- | --- |
-| `mobile/src/features/calendar/CalendarScreen.tsx` | Calendar workspace and wiring. |
-| `mobile/app/_layout.tsx` | Mount Calendar lifecycle hook and foreground notification initialization only; preserve navigation/theme. |
-| `mobile/app.json` | Required local notifications/datepicker plugin configuration only. |
-| `mobile/package.json`, `mobile/package-lock.json` | Two SDK-compatible runtime additions only; existing test command already discovers new tests. |
-| `mobile/README.md`, `mobile/MIGRATION_STATUS.md` | Actual Slice 3 behavior, architecture decisions, checks, limitations and pending native evidence. |
+| lib/types.ts | Mirror JournalEntry, JournalMedia, JournalMediaKind, TranscriptionStatus, Idea, IdeaCategory and IdeaStatus, with provenance comments; no root runtime imports. |
+| app/secondary-screens.tsx: JournalScreen, IdeasScreen and label maps | New entry/History, optional title, moods, comma tags, reader/search; live Ideas categories/statuses/filters/defaults. Native editing and confirmation improve browser CRUD safety. |
+| app/planner-app.tsx, lib/planner-storage.ts, lib/planner-api.ts | Web state ownership, snapshot/sync are context only. No native import, migration or sync. |
+| app/api/v1/journal/route.ts and [id]/route.ts; Ideas equivalents; app/api/v1/state/route.ts; lib/api.ts | Actual trimming, field limits, enums, timestamps and serializers. See deliberate local-body exception below. |
+| app/journal-media.tsx, lib/media-recorder.ts, lib/journal-export.ts | Browser recorder, Blob/object-URL drafts, HTML players, download/print/ZIP/transcript tools must NOT be imported. entrySearchText is conceptual search provenance only. |
+| lib/journal-media.ts, lib/journal-media-upload.ts, lib/r2.ts, lib/media-sign.ts, lib/media-limits.ts, db/schema.ts | D1 metadata/R2 bytes and association contract for Slice 5; not runtime dependencies here. |
+| app/api/v1/journal/[id]/media/route.ts; journal/media/route.ts; media uploads/session/parts/complete/abort, file-url, transcript and delete routes | Entry-before-upload, returned JournalMedia, temporary playback links and remote cleanup semantics. Inspect only. |
+| Native RecordsScreen, Screen/AppText/SegmentedControl/theme, Plans/Calendar stores/date validators/sheet guards | Reuse patterns for hydration, immutable state, persist-before-commit, synchronous locks, guarded completion and root-safe navigation. |
 
-Create only these files; keep additional helpers within them:
+No web screens, @/lib/*, db/*, Next/Cloudflare, browser storage or web API client in the mobile runtime. lib/api.ts requires a configured bearer token or trusted authenticated-owner header; a native credential/conflict contract is not established. **No backend sync is authorized.** Never copy secrets, fabricate trusted headers, or show a connected-cloud indicator.
 
-```text
-mobile/src/types/calendar.ts
-mobile/src/storage/calendarStorage.ts
-mobile/src/features/calendar/calendarDates.ts
-mobile/src/features/calendar/calendarModel.ts
-mobile/src/features/calendar/calendarStore.ts
-mobile/src/features/calendar/useCalendarStore.ts
-mobile/src/features/calendar/useCalendarLifecycle.ts
-mobile/src/features/calendar/CalendarMonth.tsx
-mobile/src/features/calendar/CalendarEventRow.tsx
-mobile/src/features/calendar/CalendarEventSheet.tsx
-mobile/src/features/calendar/calendarSheetGuard.ts
-mobile/src/services/notifications/calendarNotificationContract.ts
-mobile/src/services/notifications/calendarNotificationPlanner.ts
-mobile/src/services/notifications/calendarNotificationReconciler.ts
-mobile/src/services/notifications/expoCalendarNotifications.ts
-mobile/tests/calendar-dates.test.mjs
-mobile/tests/calendar-model.test.mjs
-mobile/tests/calendar-store.test.mjs
-mobile/tests/calendar-notifications.test.mjs
-mobile/tests/calendar-sheet-guard.test.mjs
-```
+## Domain and text decisions
 
-Everything else is read-only, including this brief, root dependencies/config/web code, Plans implementation/tests/storage, shared theme/components, tab layout and all route files. No generated native ios/android projects committed, no later-slice placeholders. `dist`, `.expo` and node_modules are verification outputs only. Do not edit harness/reference files or repair pre-existing web failures.
+Mirror existing shapes, not a generic merged Record model:
 
-## Meaningful automated tests
+    type JournalEntry = {
+      id: string; date: string; title?: string; body: string;
+      mood?: string; tags: string[]; media?: JournalMedia[];
+      createdAt?: string; updatedAt?: string;
+    };
+    type IdeaCategory = 'thought' | 'want' | 'project' | 'purchase' | 'someday';
+    type IdeaStatus = 'new' | 'thinking' | 'plan' | 'done' | 'archive';
+    type Idea = {
+      id: string; title: string; description?: string;
+      category: IdeaCategory; status: IdeaStatus;
+      createdAt: string; updatedAt: string;
+    };
 
-Use current `node --import tsx --test` tooling. Pure modules import neither RN nor Expo; use real production parser/store/planner/reconciler with injected in-memory storage and fake OS inventory. Fakes must maintain scheduled requests by ID, support failure/deferred promises and survive construction of a fresh store. Assert observable stored bytes, event state, OS requests and operation order, not source-text matches or a reimplementation of production algorithms.
+IDs: entry-${Crypto.randomUUID()} and idea-${Crypto.randomUUID()}, injected in tests, generated once per accepted submission after busy/validation gates. ID collisions fail without replacing rows. Edits preserve ID, array position, Journal date and createdAt (including its absence on legacy entries); update updatedAt from the injected clock. New rows use the same canonical UTC instant for both timestamps. Idea timestamps are required. Do not copy the web Ideas UI's date-only todayIso() metadata: use native strict UTC timestamps and the existing Slice 2 validator unchanged.
 
-Required coverage:
+Journal date is device-local YYYY-MM-DD captured when the editor opens; midnight/tab changes do not move it. No backdate/date-edit UI in this slice. Preserve valid stored dates; use established 0001–9999 validation and full-year-safe display, no year-zero/UTC slicing/constructor remapping.
 
-- Leap years, impossible date/time, month/year boundaries, Monday-first grids; Kyiv spring gap `2026-03-29 03:30` rejected, fall fold `2026-10-25 03:30` chooses earlier occurrence; Los Angeles gap/fold; reminder subtraction across day/DST; local dates near UTC midnight.
-- Exact valid UTC DST-gap timestamp above accepted, impossible UTC timestamp rejected. A real write through the store and load into a **new** store restores events and registry with that savedAt/createdAt, including under Kyiv. Serializer-only roundtrip is insufficient.
-- CRUD preserves IDs/createdAt, stable equal-time order, untimed sorting, note/newlines and other dates. Default/10/30/60/start-only/legacy reminder mapping; no PlanTask semantics or Plan key writes.
-- Missing/corrupt/unknown-version snapshots, invalid registry and duplicate IDs: no overwrite or OS mutation. Retry after read failure; hydration coalescing; mutation before ready; overlapping writes; failed write preserves draft/committed data and invokes no OS operations.
-- Add schedules two correct IDs; start-only schedules one; time/date/title/reminder edits replace affected requests; timed-to-untimed and deletion cancel all owned IDs; unrelated notifications survive. Same-time duplicate-titled events remain independent.
-- Repeated reconcile/restart/focus is idempotent; real fresh-store persistence plus fake OS inventory verifies no duplicates. Fault injection at every protocol boundary, including cancellation/scheduling/list/storage failure and schedule success before metadata write failure; recovery converges and retains cancellation tombstones. Deferred operations cannot overwrite a newer event revision.
-- Past advance/future start, fully past event, permission denied/provisional/granted/revoked, timezone-change invalid time, capacity window and refill. No immediate null triggers, catch-up storm or silent “scheduled” on failure.
-- Sheet identity/revision and busy-save guard tests exercise the helper actually used by the component. Keep all existing Plan tests unchanged. Document lifecycle/modal/VoiceOver behaviors requiring native acceptance rather than pretending helper tests render RN.
+Input rules (visible errors, never truncating TextInput maxLength):
 
-## Verification and acceptance
+- Journal title: optional, outer trim, blank -> omitted, max 300 for new/changed values.
+- Journal body: outer trim matches web saveEntry; preserve every internal newline, blank line, Unicode/emoji/combining sequence and space without normalization. New text-only entries require nonblank body; title/mood/tags alone cannot create empty rows.
+- **Local Journal bodies have no application character cap.** Web editor has no body limit, but POST/PATCH/state APIs cap body at 5,000 characters. Preserve long local entries (test at least 100,000 characters) instead of importing a transport cap. Document that >5,000-character entries are not currently backend-write compatible. Future sync must resolve this explicitly without truncating/replacing local text. Physical storage is finite; write failure retains the draft and committed state.
+- Moods exactly: Спокойно, Энергично, Тяжело, Радостно. Default unset; selected chip toggles off. Storage mood remains optional string, not enum. Display and preserve unknown stored mood unless explicitly changed/cleared; no new free-form mood editor. API limit is 60 characters for changed values.
+- Tags: comma-separated input, trim each token, omit empties; preserve case/order/duplicates. Existing API uses 20 tags and 40 characters each; reject exceeding these input limits visibly rather than copying readTags' silent slice(0, 20). Preserve untouched stored tags exactly on unrelated edits, including legacy long arrays and tags containing commas; do not join/reparse unless tags were edited. Dirty detection includes raw tag input.
+- Ideas: nonblank outer-trimmed title max 300; optional outer-trimmed description max 2,000 for new/changed values, matching API limits. Blank description -> omitted; keep internal multiline/Unicode unchanged.
+- Snapshot parsing is structural, never input normalization. Load/read valid legacy longer text, unfamiliar moods and optional empty strings without trimming or rewriting. Unchanged legacy fields may survive unrelated edits; changed overlength fields produce errors without draft loss. Preserve absent optional fields versus present values when untouched.
+- Empty Journal bodies remain loadable for legacy/media compatibility. Editing cannot clear a text-only body. Existing media-bearing entries may retain empty body; do not fabricate media to bypass validation.
 
-From repository root, capture starting/final `git status --short` and `git diff --stat`; inspect untracked mobile files explicitly and compare baseline hashes for forbidden files. Run `git diff --check` plus whitespace review of new files.
+## Records, Journal and Ideas UX
 
-From `mobile/`:
+Keep Дневник / Идеи segmented navigation reachable. Own segment, Journal mode/search, Ideas filters and sheet identity above conditional feature rendering so session selections survive switching. Process restart defaults to Journal/New entry; domain persistence is separate from UI preferences. No new main tabs.
 
-```bash
-npm test
-TZ=UTC npm test
-TZ=Europe/Kyiv npm test
-TZ=America/Los_Angeles npm test
-npm run typecheck
-npm run lint
-npx expo install --check
-npx expo-doctor
-npm run export:ios
-```
+Journal:
 
-Use installed tools; if dependency installation/network/doctor is blocked, report the actual blocker without claiming a pass. Run root `npm run build` to check isolation; do not change root to fix unrelated failures. Existing root Telegram failure is not a Slice 3 regression when the relevant files remain unchanged. Review runtime imports under `mobile/app` and `mobile/src` for Telegram, localStorage, Next.js, Cloudflare, HTTP clients and reminder-tick leakage; comments/provenance are not runtime dependencies.
+1. Новая запись / История modes, default New entry. New-entry panel shows today's date and a real compose action opening a full-screen native editor. Do not auto-open a modal on focus; capture date at open.
+2. History is a FlatList with date, optional title (display fallback only), body preview, mood/tags. Open reader by ID from current committed store. Full body scrolls and is selectable, never reconstructed from a preview. Older entries remain reachable; no 50-entry server-list cutoff.
+3. Derive history order: date descending, createdAt descending (missing after present for same date), original stored index for ties. New rows prepend, edits preserve stored position/createdAt; updatedAt does not reorder History. Sorting never rewrites storage.
+4. Simple local case-insensitive search across title/body/mood/tags and existing media transcripts, conceptually matching web search. Distinguish empty history from no matches. No remote search.
+5. Successful create closes its own editor and reveals History/new entry, clearing search. Successful edit returns to the saved entry's reader and clears search only if needed to reveal it. Confirm delete natively; after durable removal close only that entry's sheet and leave History usable. Failed writes retain reader/editor and full draft.
 
-Native acceptance on an available iPhone build (`cd mobile && npx expo run:ios --device`, or simulator without `--device` where supported; generated native folders remain uncommitted):
+Ideas preserve the live values:
 
-1. Cold launch still opens Plans, exactly four tabs, Plans segments/Today–Tomorrow/completion/order/storage intact. No unsolicited permission dialog.
-2. Calendar month/day navigation, dots, empty states, full text, timed/untimed CRUD and restart persistence work. Keyboard, compact/notched iPhone, large text and VoiceOver remain usable.
-3. Explicitly enable notifications, schedule a near-future event with an advance reminder; observe both once, including foreground and background/locked state where supported. Inspect pending inventory: expected IDs/times only. Change title/time/reminder before firing and verify replacement; delete before firing and verify cancellation.
-4. Deny permission and save events; return from Settings after enabling and verify future scheduling. Test restart, failed operations, timezone/clock change, past reminders and capacity warning. No claim that scheduled inventory or JS export proves OS delivery.
+| Category | Label | Status | Label |
+| --- | --- | --- | --- |
+| thought | Мысль | new | Новая |
+| want | Хочуха | thinking | Думаю |
+| project | Проект | plan | В план |
+| purchase | Покупка | done | Сделано |
+| someday | Когда-нибудь | archive | Архив |
 
-When Xcode/device access is unavailable, finish unit/type/lint/bundle checks and mark native launch/delivery/visual/accessibility acceptance **pending** in README/status. Preserve earlier pending Slice 1/2 acceptance and remove stale statements that Calendar/notifications are wholly deferred only where Slice 3 actually implements them. No fabricated screenshots or notification evidence.
+Create/read/edit/delete title, description, category/status; defaults thought/new. Both category and status filters include UI-only Все, combined with AND; tapping selected filter returns to All. Never persist all. Status plan does not create PlanTask/Goal; archive remains stored/reachable. Use stored order (new prepend; edits/status retain position), matching the web client rather than inconsistent API filtered/unfiltered sorting. Successful add/edit reveals the saved Idea and clears only excluding filters. Long title/description remain readable. No fake seeded ideas.
 
-Accept when functional flows and automated risk tests pass, desired events survive errors/restart, notification reconciliation converges without duplicates/orphaned known IDs, previous slices are unchanged, and native evidence or its exact pending status is honest.
+Each domain has independent loading, load-error + Retry, ready-empty, filtered-empty and write-error states. Corrupt Journal must not block Ideas or navigation. Focus never reloads disk over current state. Full-screen editors block tab/segment switching until save/guarded dismissal; background/foreground preserves drafts. UI selections persist across tab switches. Unsaved drafts need not survive process termination: document this; no autosave infrastructure.
 
-## Regression risks and DeepSeek handoff
+## Editor and async safety
 
-Main risks: conflating additional/start reminders; persisting events but losing cancellation IDs; destructive corrupt-data recovery; duplicate alerts after partial failure; local/UTC confusion; rescheduling past alerts; stale async sheets losing text; lifecycle churn; root initialization breaking Plans; and claims exceeding actual native evidence. The protocol, fault-injection tests and explicit UI statuses above are required safeguards, not optional polish.
+Use native full-screen Modal, own SafeAreaView, keyboard avoidance, explicit Save/Cancel outside scrolling fields. Compact/notched phones, Dynamic Type, Russian accessibility labels and 44pt targets. Existing tokens only. One list-level vertical scroll owner; remove the outer Records ScrollView when rendering FlatLists. For very long body use a bounded scroll-enabled multiline TextInput with reachable caret/selection and metadata fields, not an unbounded 100k-character native layout. Validate keyboard/input scrolling on device when available; otherwise pending.
 
-Implement in one pass: inspect and record baseline; build/test domain/date/storage; build/test notification planner and reconciliation with failures; wire native binding and UI; run checks and fix slice-introduced failures; update only allowed documentation; stop. Do not ask the user to choose routine details resolved here or start Slice 4. If a hard environment blocker prevents a check, complete independent work and report it precisely.
+A production-used synchronous sheet lock covers save AND delete before any await, with finally release. While busy disable fields/actions/pickers and all dismissal paths. Store has its own synchronous write gate; overlapping operations return typed busy with no side effects. Capture target ID, sheet key and draft revision, including delete/discard confirmation callbacks. Only the current sheet/revision can close, reveal, clear draft/search or redirect. Update current identity synchronously on open/replace/close; do not rely solely on a passive effect updating a ref. Missing IDs cannot mutate another row.
 
-Final implementer report: exact changed files, working flows, preserved event/start-plus-advance semantics, persistence/notification ID and timezone decisions, exact commands/results, regressions checked, native evidence or pending status. State that data is local to this installation, unsaved drafts are not process-durable, no web sync exists, notification failures/capacity have visible retry states, and timezone correction/refill require app execution. Never declare the whole migration complete.
+Dirty detection covers all Journal title/body/mood/raw-tags and Idea title/description/category/status fields against the captured initial draft. Cancel/Android back/gesture dismissal confirm dirty discard; disable unguarded swipes. Delayed confirmation must not discard a newer editor or bypass its lock. No optimistic draft reset, React updater side effects, background autosave or stale closure completion.
+
+## Persistence and modules
+
+Two independent AsyncStorage envelopes:
+
+    // workazy-native-journal-v1
+    type JournalSnapshotV1 = { version: 1; entries: JournalEntry[]; savedAt: string };
+    // workazy-native-ideas-v1
+    type IdeasSnapshotV1 = { version: 1; ideas: Idea[]; savedAt: string };
+
+Create src/types/journal.ts and idea.ts; src/storage/journalStorage.ts and ideaStorage.ts; src/features/journal/ and ideas/ with pure model/selectors, injected store factory, singleton native binding, workspace/row/reader/editor components. Put new shared sheet policy under src/features/records/ if useful; do not generalize Calendar by editing it. Only bindings import AsyncStorage/Crypto. No new state framework, database or generic domain engine.
+
+Stores expose cached immutable snapshots through useSyncExternalStore, phase/saving/errors, subscribe/load/retryLoad/add/edit/remove. Inject key/value storage, clock, IDs. Hydration coalesces and is idempotent; mutations/writes blocked until ready. Missing key -> ready empty. Malformed JSON/version/row/date/timestamp, duplicate/empty IDs, bad arrays/types or unknown Idea enums -> load-error, original bytes untouched, mutations blocked. Retry rereads failed store only. No reset, silent repair/drop/trim of rows. Copy/freeze nested tags/media so subscribers cannot mutate committed state.
+
+One synchronous lock per store covers every envelope write. Compute next state, await full persistence, then publish. Failure leaves committed data/bytes unchanged and full draft retryable. No global AsyncStorage clear, Plan/Calendar key access, cross-domain writes, retention cap, effect autosave or data seeding. Keep savedAt and metadata strictly canonical UTC; dates local.
+
+## Slice 5 compatibility: metadata only now
+
+Mirror every JournalMedia field in lib/types.ts: id/journalEntryId, audio/video type, mimeType, optional originalFilename, sizeBytes, optional durationMs/width/height, transcript, transcriptEdited, transcriptionStatus (pending/processing/ready/error), optional transcriptionError/provider, createdAt/updatedAt. Validate types/enums, finite nonnegative size, positive optional duration/dimensions, canonical timestamps, unique media IDs and association to the parent entry.
+
+Support absent media and media: []; new text entries omit it. Text edits preserve existing metadata/transcripts exactly. Load metadata-only legacy entries; show a plain attachments-unavailable note if needed, not fake players or recording/upload actions. Reject unknown attachment properties carrying bytes (Blob/File/ArrayBuffer/byte arrays/base64/data URLs/file or temporary playback URI fields); use an explicit metadata schema. Do not reject legitimate journal prose/transcripts merely because they contain a data-URL-like string. Malformed metadata makes the whole snapshot load-error without rewriting it.
+
+Slice 5 can attach returned JournalMedia[] to an existing entry ID with a narrow mutation under the same store lock, without replacing this envelope or text CRUD. Do not implement upload/attachment mutations now. Temporary capture files and upload progress will be separate from durable JournalEntry JSON.
+
+Backend findings: metadata in D1, binary streams in R2; entry must exist before upload. Multipart upload and chunked upload-session/part/complete/abort routes exist; the current web client uses chunked sessions. Playback URLs are separate and temporary; transcript PATCH/transcribe and media/entry DELETE have remote side effects. Slice 5 must audit native credentials, local/server IDs, the 5,000-character body mismatch and retry/cancel/cleanup before integration. Local text commits independently of media success. Slice 4 deletion is local only, even for stored attachment metadata; never claim it deletes R2 objects. Failed deletion retains metadata.
+
+Excluded: audio/video recording, camera/mic permissions, upload, transcription execution/editing, R2/D1 wiring, playback, sync/auth, export/import/backup, Records reminders, Finance, Goals and AI. **Omit media buttons** in Slice 4; no fake affordances, reconnect banners, media packages/plugins/permission strings. Prepare via types/storage only.
+
+## Required tests
+
+Exercise production-used models/stores/controllers, not unused helper copies. Keep existing Plan/Calendar tests passing and unchanged. Add journal-*.test.mjs, idea-*.test.mjs and records-sheet-*.test.mjs as needed:
+
+1. Actual store -> serialized bytes -> brand-new store round-trip for each domain, independent keys, no seeds/Plan/Calendar writes. Optional title/metadata absence, mood/tags and every category/status survive restart.
+2. Bad JSON/version/rows/enums/dates/timestamps/duplicate IDs/media -> load-error, unchanged bytes, zero writes. Retry; deferred/coalesced hydration; pre-ready mutation rejection; no stale hydration overwrite.
+3. Deferred/failed add/edit/delete/status writes: synchronous busy rejection, committed state unchanged, draft intact, finally unlock, retry without duplicates. IDs once per accepted submission; edit identity/date/createdAt/order preserved.
+4. At least 100k characters of Cyrillic/emoji/combining characters/blank lines/internal spacing: input -> save -> restart -> unrelated edit -> restart retains exact body except defined outer trim. Optional title, empty-body validation, visible field-limit errors and legacy long-field/tag preservation.
+5. History sorting/ties/missing createdAt/search/open by ID; Ideas filters/status/archive/order/reveal. Captured date across midnight, strict UTC DST-gap timestamp acceptance and impossible timestamp rejection under all timezone runs.
+6. Every-field dirty detection; save/delete share production lock through persistence; duplicate submit/dismissal blocked. Deferred save/delete/discard from A cannot close/redirect/clear B. Test the actual completion policy used by the parent and inspect component wiring.
+7. Absent/empty/present media metadata round-trips and survives text edits/failed delete; metadata-only rows readable. Invalid byte-bearing metadata rejected without rewriting; prose resembling base64 remains valid. Never fabricate media.
+8. Import/runtime audit excludes browser/backend/Telegram/media dependencies and permissions/fake sync UI. Pure tests do not prove native keyboard/scroll/VoiceOver behavior.
+
+## Verification and handoff
+
+From mobile/, record each actual command/result:
+
+    npm test
+    TZ=Europe/Kyiv npm test
+    TZ=America/Los_Angeles npm test
+    TZ=UTC npm test
+    npm run typecheck
+    npm run lint
+    npx expo install --check
+    npx expo-doctor
+    npm run export:ios
+
+From root: npm run build; git diff --check; final status/diff and baseline hash comparison of forbidden files (git diff misses untracked mobile sources). Runtime leakage scan:
+
+    rg -n 'telegram|TELEGRAM_|localStorage|window\.|document\.|navigator\.|MediaRecorder|next/|cloudflare:|@/lib/|fetch\(|axios|expo-camera|expo-audio|expo-av' mobile/app mobile/src
+
+Inspect matches as runtime versus comments; inspect new imports, package/app config for HTTP, secrets, permissions, backend and binary media handling. Do not suppress failures/change unrelated root code. The root Telegram workflow test assertion is pre-existing, not permission to fix it. Dependencies are installed; do not upgrade Expo. Report any network/doctor/build/export blocker precisely.
+
+Native acceptance when available: cold launch Plans/four tabs, Plans/Calendar smoke regression; Records sections; long reader/editor with keyboard, caret/selection at end, large text/VoiceOver/44pt/safe areas; titleless entry/mood/tags/history/edit/delete; Idea filters/status; dirty cancel/back; background/foreground; offline restart after confirmed save; failed-write retry without text loss. Records must cause no media/notification permission prompt.
+
+No Xcode/iPhone evidence exists here: mark Slice 4 keyboard/visual/native restart/accessibility acceptance pending, preserve previous slices' pending acceptance, and never call tests/export/simulated timings device evidence.
+
+Final implementer report: exact files, working flows, storage/text/order/media decisions, production-path coverage, commands/results, unchanged Slice 1–3 evidence and device status. Update native README/status with only delivered Slice 4, local-only data/body/API mismatch, unsaved-draft termination limitation and deferred Slice 5. Stop; do not mark the migration complete or begin recording.
