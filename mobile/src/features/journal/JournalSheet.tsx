@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -27,6 +27,16 @@ import {
 import { MOOD_CHOICES } from './journalSelectors';
 import type { JournalEntryInput } from './journalModel';
 import type { JournalMutationResult } from './journalStore';
+import MediaAttachmentCard from './media/MediaAttachmentCard';
+import { claimActivePlayback, clearActivePlayback } from './media/activePlayback';
+import MediaRecorderOverlay, { type RecorderKind } from './media/MediaRecorderOverlay';
+import { failureMessage, type DraftIdentity, type LocalMediaDraft } from '@/services/media/mediaContracts';
+import {
+  abandonStagedDrafts,
+  leaseDraftMedia,
+  registerJournalDraftOwner,
+} from '@/services/media/journalMediaRuntime';
+import type { CoordinatorOutcome } from '@/services/media/journalMediaCoordinator';
 
 export type JournalSheetMode = 'add' | 'read' | 'edit';
 
@@ -59,7 +69,21 @@ type JournalSheetProps = {
   onEditSaved: (sheetKey: string, entryId: string) => void;
   onAdd: (input: JournalEntryInput, date: string) => Promise<JournalMutationResult>;
   onEdit: (id: string, input: JournalEntryInput) => Promise<JournalMutationResult>;
-  onRemove: (id: string) => Promise<JournalMutationResult>;
+  /** Media-owning mutations are orchestrated by the journal media coordinator. */
+  onCommitMediaCreate: (
+    owner: DraftIdentity,
+    input: JournalEntryInput,
+    date: string,
+    drafts: readonly LocalMediaDraft[],
+  ) => Promise<CoordinatorOutcome>;
+  onCommitMediaEdit: (
+    owner: DraftIdentity,
+    entryId: string,
+    input: JournalEntryInput,
+    change: { add: readonly LocalMediaDraft[]; removeIds?: readonly string[] },
+  ) => Promise<CoordinatorOutcome>;
+  onRemoveMedia: (entryId: string, mediaId: string) => Promise<CoordinatorOutcome>;
+  onDeleteEntryWithMedia: (entryId: string) => Promise<CoordinatorOutcome>;
 };
 
 const BLANK_BODY = 'Введите текст записи.';
@@ -114,7 +138,10 @@ export default function JournalSheet({
   onEditSaved,
   onAdd,
   onEdit,
-  onRemove,
+  onCommitMediaCreate,
+  onCommitMediaEdit,
+  onRemoveMedia,
+  onDeleteEntryWithMedia,
 }: JournalSheetProps) {
   const entry = entryId ? entries.find((item) => item.id === entryId) ?? null : null;
   const [innerMode, setInnerMode] = useState<JournalSheetMode>(initialMode);
@@ -125,6 +152,57 @@ export default function JournalSheet({
   const lockRef = useRef<RecordsSheetLock | null>(null);
   const lock = (lockRef.current ??= createRecordsSheetLock());
   const draftRevisionRef = useRef(0);
+  /** Prepared takes that will be committed with this draft, in order. */
+  const [staged, setStaged] = useState<LocalMediaDraft[]>([]);
+  /** Synchronous mirror of `staged` for the unmount cleanup path. */
+  const stagedRef = useRef<LocalMediaDraft[]>([]);
+  /** Committed attachments staged for removal by the next successful save. */
+  const [removedMediaIds, setRemovedMediaIds] = useState<string[]>([]);
+  const [recorderKind, setRecorderKind] = useState<RecorderKind | null>(null);
+  /** Session id of the recorder THIS sheet opened (recorded at open time). */
+  const recorderSessionRef = useRef<string | null>(null);
+  const [activeMediaId, setActiveMediaId] = useState<string | null>(null);
+
+  /**
+   * Live sheet-level identity, published SYNCHRONOUSLY by the handlers that
+   * change it (never read during render), so the coordinator can refuse a
+   * superseded sheet or a changed draft revision.
+   */
+  function syncDraftOwner(): void {
+    registerJournalDraftOwner({
+      sheetKey,
+      entryId: entryId ?? null,
+      draftKey: sheetKey,
+      draftRevision: draftRevisionRef.current,
+    });
+  }
+  const getDraftIdentity = useCallback(
+    (): DraftIdentity => ({
+      sheetKey,
+      entryId: entryId ?? null,
+      draftKey: sheetKey,
+      draftRevision: draftRevisionRef.current,
+    }),
+    [entryId, sheetKey],
+  );
+  function commitStaged(next: LocalMediaDraft[]): void {
+    stagedRef.current = next;
+    setStaged(next);
+  }
+
+  useEffect(() => {
+    syncDraftOwner();
+    return () => {
+      registerJournalDraftOwner(null);
+      // A closed/abandoned draft must not leak its uncommitted staging files.
+      void abandonStagedDrafts(stagedRef.current);
+      stagedRef.current = [];
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- identity fields are stable per sheet
+  }, []);
+
+  const mediaDirty = staged.length > 0 || removedMediaIds.length > 0;
+  const entryMedia = (entry?.media ?? []).filter((item) => !removedMediaIds.includes(item.id));
 
   const lockBusy = busy || saving;
   const isEditing = innerMode === 'add' || innerMode === 'edit';
@@ -134,6 +212,7 @@ export default function JournalSheet({
 
   function change<K extends keyof JournalDraft>(field: K, value: JournalDraft[K]): void {
     draftRevisionRef.current += 1;
+    syncDraftOwner();
     setDraft((current) => ({ ...current, [field]: value }));
     if (validation) setValidation(null);
   }
@@ -148,7 +227,88 @@ export default function JournalSheet({
     setDraft(snapshot);
     setInitialDraft(snapshot);
     setValidation(null);
+    syncDraftOwner();
     setInnerMode('edit');
+  }
+
+  /** Stage a committed attachment removal; it applies on the next Save. */
+  function stageAttachmentRemoval(mediaId: string): void {
+    if (lock.isBusy()) return;
+    const revisionAtConfirm = draftRevisionRef.current;
+    Alert.alert('Убрать вложение?', 'Файл удалится после сохранения записи.', [
+      { text: 'Остаться', style: 'cancel' },
+      {
+        text: 'Убрать',
+        style: 'destructive',
+        onPress: () => {
+          if (
+            !allowDelayedConfirmation({
+              stillCurrent: isCurrent(),
+              busy: lock.isBusy(),
+              revisionAtConfirm,
+              revisionNow: draftRevisionRef.current,
+            })
+          ) {
+            return;
+          }
+          draftRevisionRef.current += 1;
+          syncDraftOwner();
+          setRemovedMediaIds((current) =>
+            current.includes(mediaId) ? current : [...current, mediaId],
+          );
+        },
+      },
+    ]);
+  }
+
+  /** Reader action: attachment deletion commits immediately, reader stays open. */
+  function requestAttachmentDelete(mediaId: string): void {
+    if (!entry || lock.isBusy()) return;
+    const targetId = entry.id;
+    const revisionAtConfirm = draftRevisionRef.current;
+    Alert.alert('Удалить вложение?', 'Файл будет удалён с этого устройства.', [
+      { text: 'Отмена', style: 'cancel' },
+      {
+        text: 'Удалить',
+        style: 'destructive',
+        onPress: async () => {
+          if (
+            !allowDelayedConfirmation({
+              stillCurrent: isCurrent(),
+              busy: lock.isBusy(),
+              revisionAtConfirm,
+              revisionNow: draftRevisionRef.current,
+            })
+          ) {
+            return;
+          }
+          if (!lock.acquire()) return;
+          setBusy(true);
+          try {
+            const outcome = await onRemoveMedia(targetId, mediaId);
+            if (!outcome.ok) setValidation(failureMessage(outcome.failure.code));
+            else if (outcome.cleanup.failed.length > 0) {
+              // The metadata removal is committed; the leftover file is retryable.
+              setValidation('Вложение убрано, но файл не удалось удалить. Повторите позже.');
+            }
+          } finally {
+            lock.release();
+            setBusy(false);
+          }
+        },
+      },
+    ]);
+  }
+
+  function removeStaged(mediaId: string): void {
+    if (lock.isBusy()) return;
+    draftRevisionRef.current += 1;
+    syncDraftOwner();
+    const removedDraft = stagedRef.current.find((draft) => draft.id === mediaId);
+    commitStaged(stagedRef.current.filter((draft) => draft.id !== mediaId));
+    // Only this abandoned take's own files (never a committed object); the
+    // abandonment releases its lease and stays retryable on failure.
+    if (removedDraft) void abandonStagedDrafts([removedDraft]);
   }
 
   function requestClose(): void {
@@ -157,12 +317,13 @@ export default function JournalSheet({
       onClose(sheetKey);
       return;
     }
-    if (!journalDraftDirty(draft, initialDraft)) {
+    if (!journalDraftDirty(draft, initialDraft) && !mediaDirty) {
       onClose(sheetKey);
       return;
     }
     const revisionAtConfirm = draftRevisionRef.current;
-    Alert.alert('Отменить изменения?', 'Несохранённый текст будет потерян.', [
+    // Discarding a draft also abandons its uncommitted takes.
+    Alert.alert('Отменить изменения?', 'Несохранённые текст и вложения будут потеряны.', [
       { text: 'Остаться', style: 'cancel' },
       {
         text: 'Отменить',
@@ -205,20 +366,49 @@ export default function JournalSheet({
         },
       };
       const isCreate = innerMode === 'add' || !entryId;
-      const result = isCreate ? await onAdd(input, date) : await onEdit(entryId, input);
-      if (result.ok) {
-        if (!isDraftUnchanged(draftRevisionRef.current, revisionAtSave)) return;
-        if (isCreate) {
-          onSaveComplete(sheetKey, { action: 'created' });
+      const owner: DraftIdentity = { ...getDraftIdentity(), draftRevision: revisionAtSave };
+      const adds = staged;
+      const removes = removedMediaIds;
+
+      if (isCreate && adds.length > 0) {
+        // Text + all prepared attachments commit in ONE journal write.
+        const outcome = await onCommitMediaCreate(owner, input, date, adds);
+        if (!outcome.ok) {
+          setValidation(failureMessage(outcome.failure.code));
           return;
         }
-        // A successful edit returns to this entry's reader (content re-derives
-        // from the committed store on the next render) instead of closing.
-        setInnerMode('read');
-        onEditSaved(sheetKey, entryId as string);
+      } else if (!isCreate && (adds.length > 0 || removes.length > 0)) {
+        const outcome = await onCommitMediaEdit(owner, entryId as string, input, {
+          add: adds,
+          removeIds: removes,
+        });
+        if (!outcome.ok) {
+          setValidation(failureMessage(outcome.failure.code));
+          return;
+        }
+        if (outcome.cleanup.failed.length > 0) {
+          setValidation('Запись сохранена, но файл вложения не удалось удалить. Повторите позже.');
+        }
+      } else {
+        const result = isCreate ? await onAdd(input, date) : await onEdit(entryId as string, input);
+        if (!result.ok) {
+          setValidation(messageFor(result));
+          return;
+        }
+      }
+
+      if (!isDraftUnchanged(draftRevisionRef.current, revisionAtSave)) return;
+      // Committed: the store now references these ids, so they are never discarded.
+      commitStaged([]);
+      setRemovedMediaIds([]);
+      if (isCreate) {
+        onSaveComplete(sheetKey, { action: 'created' });
         return;
       }
-      setValidation(messageFor(result));
+      // A successful edit returns to this entry's reader (content re-derives
+      // from the committed store on the next render) instead of closing.
+      setInnerMode('read');
+      onEditSaved(sheetKey, entryId as string);
     } finally {
       lock.release();
       setBusy(false);
@@ -250,9 +440,9 @@ export default function JournalSheet({
           if (!lock.acquire()) return;
           setBusy(true);
           try {
-            const result = await onRemove(targetId);
-            if (result.ok) onSaveComplete(sheetKey, { action: 'deleted', id: targetId });
-            else setValidation(messageFor(result));
+            const outcome = await onDeleteEntryWithMedia(targetId);
+            if (outcome.ok) onSaveComplete(sheetKey, { action: 'deleted', id: targetId });
+            else setValidation(failureMessage(outcome.failure.code));
           } finally {
             lock.release();
             setBusy(false);
@@ -337,11 +527,20 @@ export default function JournalSheet({
                     Текст не заполнен.
                   </AppText>
                 )}
-                {(entry.media ?? []).length > 0 ? (
-                  <AppText variant="meta" color="muted" style={styles.mediaNote}>
-                    Во вложении {entry.media?.length} файл(а). Воспроизведение появится
-                    в следующем обновлении — метаданные сохранены.
-                  </AppText>
+                {entryMedia.length > 0 ? (
+                  <View style={styles.attachmentList}>
+                    {entryMedia.map((item) => (
+                      <MediaAttachmentCard
+                        key={item.id}
+                        kind={item.type}
+                        media={item}
+                        active={activeMediaId === item.id}
+                        onActivate={() => setActiveMediaId((current) => claimActivePlayback(current, item.id))}
+                        onFinished={() => setActiveMediaId((current) => clearActivePlayback(current, item.id))}
+                        onRemove={() => requestAttachmentDelete(item.id)}
+                      />
+                    ))}
+                  </View>
                 ) : null}
                 <View style={styles.actionStack}>
                   <Pressable
@@ -449,6 +648,74 @@ export default function JournalSheet({
                   accessibilityLabel="Теги записи"
                 />
 
+                <View style={styles.fieldGroup}>
+                  <AppText variant="label" color="secondary">
+                    Вложения
+                  </AppText>
+                  {entryMedia.length > 0 ? (
+                    <AppText variant="meta" color="muted">
+                      Отмеченные вложения удалятся после сохранения.
+                    </AppText>
+                  ) : null}
+                  <View style={styles.attachmentList}>
+                    {staged.map((draftMedia) => (
+                      <MediaAttachmentCard
+                        key={draftMedia.id}
+                        staged
+                        kind={draftMedia.kind}
+                        media={{
+                          id: draftMedia.id,
+                          kind: draftMedia.kind,
+                          mimeType: draftMedia.mimeType,
+                          sizeBytes: draftMedia.sizeBytes,
+                          durationMs: draftMedia.durationMs,
+                        }}
+                        active={false}
+                        onActivate={() => undefined}
+                        onFinished={() => undefined}
+                        onRemove={() => removeStaged(draftMedia.id)}
+                      />
+                    ))}
+                    {entryMedia.map((item) => (
+                      <MediaAttachmentCard
+                        key={item.id}
+                        kind={item.type}
+                        media={item}
+                        active={activeMediaId === item.id}
+                        onActivate={() => setActiveMediaId((current) => claimActivePlayback(current, item.id))}
+                        onFinished={() => setActiveMediaId((current) => clearActivePlayback(current, item.id))}
+                        onRemove={() => stageAttachmentRemoval(item.id)}
+                      />
+                    ))}
+                  </View>
+                  <View style={styles.chipRow}>
+                    {(['audio', 'video'] as const).map((kind) => (
+                      <Pressable
+                        key={kind}
+                        accessibilityRole="button"
+                        accessibilityLabel={kind === 'audio' ? 'Записать аудио' : 'Записать видео'}
+                        disabled={lockBusy}
+                        onPress={() => setRecorderKind(kind)}
+                        style={({ pressed }) => [
+                          styles.chip,
+                          pressed && styles.pressed,
+                          lockBusy && styles.disabled,
+                        ]}
+                      >
+                        <Ionicons
+                          name={kind === 'audio' ? 'mic-outline' : 'videocam-outline'}
+                          size={16}
+                          color={colors.textSecondary}
+                        />
+                        <AppText variant="label">{kind === 'audio' ? 'Аудио' : 'Видео'}</AppText>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <AppText variant="meta" color="muted">
+                    Аудио до 15 минут, видео до 10 минут. Файлы хранятся на устройстве.
+                  </AppText>
+                </View>
+
                 {validation ? (
                   <View accessibilityRole="alert">
                     <AppText variant="meta" color="danger" style={styles.validationText}>
@@ -492,6 +759,46 @@ export default function JournalSheet({
             </View>
           ) : null}
         </KeyboardAvoidingView>
+
+        {recorderKind ? (
+          <MediaRecorderOverlay
+            visible
+            kind={recorderKind}
+            getIdentity={getDraftIdentity}
+            // Synchronous authoritative sources: the parent's current-sheet ref and
+            // the sheet's own busy lock (never a rendered flag that lags a frame).
+            isEditorBusy={() => lock.isBusy() || saving}
+            isCurrent={() => isCurrent()}
+            onSessionOpened={(sessionId) => {
+              recorderSessionRef.current = sessionId;
+            }}
+            onUse={(media) => {
+              // Identity gate: the completion must belong to THIS sheet AND to the
+              // recorder session this sheet opened. A stale recorder (its editor
+              // replaced, or a newer session opened) must never attach its take to
+              // a newer draft — it is cleaned instead.
+              const expectedSession = recorderSessionRef.current;
+              if (
+                !isCurrent() ||
+                expectedSession === null ||
+                expectedSession !== media.owner.sessionId ||
+                media.owner.sheetKey !== sheetKey ||
+                media.owner.draftKey !== sheetKey
+              ) {
+                void abandonStagedDrafts([media]);
+                return;
+              }
+              // The take joins THIS draft synchronously and bumps its revision.
+              draftRevisionRef.current += 1;
+              syncDraftOwner();
+              // A loaded, unsaved take is protected from sweeps while it waits.
+              leaseDraftMedia(media);
+              commitStaged([...stagedRef.current, media]);
+              setRecorderKind(null);
+            }}
+            onCancel={() => setRecorderKind(null)}
+          />
+        ) : null}
       </SafeAreaView>
     </Modal>
   );
@@ -538,7 +845,6 @@ const styles = StyleSheet.create({
   readTitle: { fontSize: 20, lineHeight: 28, fontWeight: '600' },
   readMeta: { gap: spacing.xs },
   readBody: { lineHeight: 26 },
-  mediaNote: { lineHeight: 18 },
   notFound: { paddingVertical: spacing.xxl, textAlign: 'center' },
   actionStack: { marginTop: spacing.sm, gap: spacing.sm },
   actionRow: {
@@ -569,6 +875,10 @@ const styles = StyleSheet.create({
   // Bounded, scroll-enabled field: a 100k-character body stays editable with a
   // reachable caret instead of building an unbounded native layout.
   bodyInput: { minHeight: 180, maxHeight: 320 },
+  attachmentList: {
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
   fieldGroup: { gap: spacing.sm },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   chip: {

@@ -18,7 +18,14 @@
  * - tags: comma-separated, each token trimmed, empties omitted, case/order/
  *   duplicates preserved, max 20 tags × 40 characters for changed values.
  */
-import type { JournalEntry } from '@/types/journal';
+import type { JournalEntry, JournalMedia } from '@/types/journal';
+import {
+  isSafeMediaId,
+} from '@/storage/localMediaManifest';
+import {
+  normalizeMime,
+  validateCaptureMetadata,
+} from '@/services/media/mediaLimits';
 import { isSupportedRecordsDate } from '../records/recordsDates';
 
 export const JOURNAL_TITLE_MAX_LENGTH = 300;
@@ -34,7 +41,14 @@ export type JournalValidationReason =
   | 'title-too-long'
   | 'mood-too-long'
   | 'tags-too-many'
-  | 'tag-too-long';
+  | 'tag-too-long'
+  | 'media-id-invalid'
+  | 'media-type-invalid'
+  | 'media-too-large'
+  | 'media-duration-too-long'
+  | 'media-invalid'
+  | 'media-duplicate'
+  | 'media-missing';
 
 export type JournalValidationFailure = { ok: false; reason: JournalValidationReason };
 
@@ -240,4 +254,223 @@ export function editEntry(
 export function removeEntry(entries: readonly JournalEntry[], id: string): JournalEntriesResult {
   if (!entries.some((entry) => entry.id === id)) return { ok: false, reason: 'missing' };
   return { ok: true, entries: entries.filter((entry) => entry.id !== id) };
+}
+
+// ---------------------------------------------------------------------------
+// Attachment (metadata-only) support
+// ---------------------------------------------------------------------------
+
+/** Metadata for a prepared local attachment; the store supplies the parent id. */
+export type JournalMediaAttachmentInput = {
+  id: string;
+  type: 'audio' | 'video';
+  mimeType: string;
+  sizeBytes: number;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  originalFilename?: string;
+};
+
+export type AddEntryWithMediaInput = JournalEntryInput & {
+  id: string;
+  date: string;
+  now: Date;
+  media: readonly JournalMediaAttachmentInput[];
+};
+
+export type EditEntryMediaChange = {
+  add?: readonly JournalMediaAttachmentInput[];
+  removeIds?: readonly string[];
+};
+
+function allMediaIds(entries: readonly JournalEntry[]): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    for (const media of entry.media ?? []) ids.add(media.id);
+  }
+  return ids;
+}
+
+/** Validate one prepared attachment against the mirrored per-file limits. */
+function validateAttachment(
+  attachment: JournalMediaAttachmentInput,
+): { ok: true } | { ok: false; reason: JournalValidationReason } {
+  if (!isSafeMediaId(attachment.id)) return { ok: false, reason: 'media-id-invalid' };
+  if (attachment.type !== 'audio' && attachment.type !== 'video') {
+    return { ok: false, reason: 'media-type-invalid' };
+  }
+  const validated = validateCaptureMetadata(attachment.type, {
+    sizeBytes: attachment.sizeBytes,
+    durationMs: attachment.durationMs ?? null,
+    mimeType: attachment.mimeType,
+  });
+  if (!validated.ok) {
+    switch (validated.reason) {
+      case 'size-too-large':
+        return { ok: false, reason: 'media-too-large' };
+      case 'duration-too-long':
+        return { ok: false, reason: 'media-duration-too-long' };
+      case 'mime-unsupported':
+        return { ok: false, reason: 'media-type-invalid' };
+      default:
+        return { ok: false, reason: 'media-invalid' };
+    }
+  }
+  return { ok: true };
+}
+
+/** Build the persisted metadata for a validated attachment of `entryId`. */
+function buildMedia(
+  attachment: JournalMediaAttachmentInput,
+  entryId: string,
+  nowIso: string,
+): JournalMedia {
+  const media: JournalMedia = {
+    id: attachment.id,
+    journalEntryId: entryId,
+    type: attachment.type,
+    mimeType: normalizeMime(attachment.mimeType),
+    sizeBytes: attachment.sizeBytes,
+    transcriptEdited: false,
+    // "pending" = not transcribed in the current web model; there is no queue.
+    transcriptionStatus: 'pending',
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+  if (attachment.durationMs !== undefined) media.durationMs = attachment.durationMs;
+  if (attachment.width !== undefined) media.width = attachment.width;
+  if (attachment.height !== undefined) media.height = attachment.height;
+  if (attachment.originalFilename !== undefined) {
+    media.originalFilename = attachment.originalFilename;
+  }
+  return media;
+}
+
+/**
+ * Prepend a new entry together with all prepared attachments in ONE row.
+ * A media-only entry is valid (at least one real prepared attachment); a blank
+ * TEXT-ONLY entry is not. Attachment ids must be unique across every entry.
+ */
+export function addEntryWithMedia(
+  entries: readonly JournalEntry[],
+  input: AddEntryWithMediaInput,
+): JournalAddResult {
+  if (!isSupportedRecordsDate(input.date)) return { ok: false, reason: 'date-invalid' };
+  const fields = buildFields(input, undefined, true);
+  if (!fields.ok) return fields;
+  if (input.media.length === 0 && fields.body.length === 0) {
+    return { ok: false, reason: 'body-blank' };
+  }
+
+  const existingIds = allMediaIds(entries);
+  const seen = new Set<string>();
+  for (const attachment of input.media) {
+    const validated = validateAttachment(attachment);
+    if (!validated.ok) return validated;
+    if (existingIds.has(attachment.id) || seen.has(attachment.id)) {
+      return { ok: false, reason: 'media-duplicate' };
+    }
+    seen.add(attachment.id);
+  }
+
+  const nowIso = input.now.toISOString();
+  const entry: JournalEntry = {
+    id: input.id,
+    date: input.date,
+    body: fields.body,
+    tags: fields.tags,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+  if (fields.title !== undefined) entry.title = fields.title;
+  if (fields.mood !== undefined) entry.mood = fields.mood;
+  if (input.media.length > 0) {
+    entry.media = input.media.map((attachment) => buildMedia(attachment, entry.id, nowIso));
+  }
+  return { ok: true, entries: [entry, ...entries], entry };
+}
+
+/**
+ * Merge attachment additions/removals into the LATEST committed row. Kept media
+ * (metadata and order) and every untouched text field are preserved exactly; a
+ * removal may leave an empty body (legacy/media-compatible) as long as the row
+ * still has media or already had a body.
+ */
+export function editEntryWithMedia(
+  entries: readonly JournalEntry[],
+  id: string,
+  input: JournalEntryInput,
+  change: EditEntryMediaChange,
+  now: Date,
+): JournalEntriesResult {
+  const existing = entries.find((entry) => entry.id === id);
+  if (!existing) return { ok: false, reason: 'missing' };
+  const add = change.add ?? [];
+  const removeIds = change.removeIds ?? [];
+
+  const keptMedia = (existing.media ?? []).filter((media) => !removeIds.includes(media.id));
+  const knownIds = allMediaIds(entries);
+  const seen = new Set<string>();
+  for (const attachment of add) {
+    const validated = validateAttachment(attachment);
+    if (!validated.ok) return validated;
+    if (knownIds.has(attachment.id) || seen.has(attachment.id)) {
+      return { ok: false, reason: 'media-duplicate' };
+    }
+    seen.add(attachment.id);
+  }
+  for (const mediaId of removeIds) {
+    if (!(existing.media ?? []).some((media) => media.id === mediaId)) {
+      return { ok: false, reason: 'media-missing' };
+    }
+  }
+
+  const fields = buildFields(input, existing, false);
+  if (!fields.ok) return fields;
+  const nowIso = now.toISOString();
+  const nextMedia = [
+    ...keptMedia,
+    ...add.map((attachment) => buildMedia(attachment, existing.id, nowIso)),
+  ];
+  if (fields.body.length === 0 && nextMedia.length === 0) {
+    return { ok: false, reason: 'body-blank' };
+  }
+
+  const next: JournalEntry = {
+    ...existing,
+    body: fields.body,
+    tags: fields.tags,
+    updatedAt: nowIso,
+  };
+  if (input.changed.title) {
+    if (fields.title === undefined) delete next.title;
+    else next.title = fields.title;
+  }
+  if (input.changed.mood) {
+    if (fields.mood === undefined) delete next.mood;
+    else next.mood = fields.mood;
+  }
+  if (nextMedia.length > 0) next.media = nextMedia;
+  else delete next.media;
+  return { ok: true, entries: entries.map((entry) => (entry.id === id ? next : entry)) };
+}
+
+/** Remove one attachment from a committed entry (reader action). */
+export function removeEntryMedia(
+  entries: readonly JournalEntry[],
+  entryId: string,
+  mediaId: string,
+  now: Date,
+): JournalEntriesResult {
+  const existing = entries.find((entry) => entry.id === entryId);
+  if (!existing) return { ok: false, reason: 'missing' };
+  if (!(existing.media ?? []).some((media) => media.id === mediaId)) {
+    return { ok: false, reason: 'media-missing' };
+  }
+  const remaining = (existing.media ?? []).filter((media) => media.id !== mediaId);
+  const next: JournalEntry = { ...existing, updatedAt: now.toISOString() };
+  if (remaining.length > 0) next.media = remaining;
+  else delete next.media;
+  return { ok: true, entries: entries.map((entry) => (entry.id === entryId ? next : entry)) };
 }

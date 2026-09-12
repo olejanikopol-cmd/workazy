@@ -820,6 +820,632 @@ byte-identical to the pre-Slice-4 baseline.
   safe areas on compact/notched devices, on-device restart after a confirmed save.
   Pure tests, export success and simulated timings are NOT device evidence.
 
+## Slice 5 — Native journal media: local recording, ownership and playback (decisions recorded before implementation, 2026-09-11)
+
+Baseline: commit `1fc38ae` (Slice 4) with a clean tree; the mobile suite was
+rerun before editing (223 tests passing).
+
+### Decision (recorded before implementation)
+
+Bounded **local-media** branch, as the brief directs: real native recording,
+preview, re-record, multiple attachments, durable local files and offline
+playback. **No upload, no sync, no remote playback, no transcription execution.**
+Reason (source evidence, not a guess):
+
+| Source | Why the cloud path is deferred |
+| --- | --- |
+| `lib/api.ts`, `lib/planner-api.ts` | Server needs `Authorization: Bearer <WORKAZY_API_TOKEN>` or an infrastructure-authenticated owner header; mobile has no base-URL/credential/owner-identity contract. Embedding the server token or a trusted owner header would be a security regression, so it was not done. |
+| `app/api/v1/journal/*` | Server Journal body cap is 5,000 characters while local bodies intentionally exceed 100k — the local/server identity and text mismatch must be resolved first. |
+| `lib/media-sign.ts`, media routes | Signed playback URLs have a 5-minute TTL and are not durable `JournalMedia` fields; there is no local ownership/deletion contract for remote objects. |
+| `lib/transcription/*` | Groq is server-only (`GROQ_API_KEY`), and video transcription needs a separate audio track with no bounded native extraction/auth contract. |
+
+### Domain / data decisions (Slice 5)
+
+- Journal envelope stays `workazy-native-journal-v1` (V1, unchanged). `JournalMedia`
+  keeps its exact shape; comments may describe local ownership but no URI/binary/
+  source property or new transcription value was added.
+- New local attachments use collision-checked `local-media-${uuid}` ids and store
+  full metadata: real parent id, MIME/size/duration, canonical UTC timestamps,
+  optional real dimensions. `transcriptEdited: false`,
+  `transcriptionStatus: "pending"` (= not transcribed; there is **no** queue,
+  spinner or scheduled promise), transcript/provider/error omitted.
+- Files: staging `Paths.cache/workazy-journal-media/v1/staging/<session>/`, durable
+  `Paths.document/workazy-journal-media/v1/objects/<id>/{manifest.json,recording.<ext>}`.
+  No absolute container path is persisted; ownership = valid strict manifest +
+  contained generated path. Manifest V1 is `{version, mediaId, fileName, mimeType,
+  sizeBytes, durationMs, createdAt}` with no unknown keys, no separators/traversal,
+  `recording.(m4a|mp4|mov)` only, and MIME↔extension consistency.
+- Order of operations is fixed and tested: adopt (copy, source kept) → promote
+  (copy, verify size, write manifest, verify manifest, only then drop the staging
+  copy) → journal write → release leases. Metadata removal always precedes file
+  deletion; a failed metadata write deletes nothing and keeps the draft retryable
+  with the SAME take ids (`prepare` is idempotent for a stable id).
+- Rich media rules: a media-only new entry is valid; a blank text-only entry is
+  not; per-field `changed` semantics, untouched legacy fields, tag arrays and
+  existing transcripts are preserved exactly; ids are unique across all entries;
+  removals staged in edit mode apply on Save, reader deletion commits immediately.
+
+### Files (Slice 5)
+
+Created: `src/services/media/{mediaLimits,mediaContracts,recorderController,
+localMediaRepository,journalMediaCoordinator,expoMediaFiles,expoRecorderBindings,
+useJournalRecorder,journalMediaRuntime}.ts`, `src/storage/localMediaManifest.ts`,
+`src/features/journal/media/{MediaRecorderOverlay,MediaPlayers,MediaAttachmentCard}.tsx`,
+`tests/{media-recorder,media-repository,media-coordinator}.test.mjs`.
+
+Changed narrowly: `src/features/journal/{journalModel,journalStore,JournalSheet}`,
+`src/features/records/RecordsScreen.tsx`, `mobile/package.json`,
+`mobile/package-lock.json`, `mobile/app.json`, `mobile/README.md`,
+`mobile/MIGRATION_STATUS.md`. Plans, Calendar, notifications, Ideas, theme,
+components, routes, types, Records date helpers and the sheet guard are
+**byte-identical** (hash compared before/after).
+
+Dependencies: `npx expo install expo-audio expo-camera expo-video expo-file-system`
+resolved to the SDK-57 ranges `~57.0.5 / ~57.0.5 / ~57.0.4 / ~57.0.7`; `expo-asset`
+`~57.0.17` had to be added **directly** because `npx expo-doctor` requires it as an
+installed peer of `expo-audio` (21/21 again afterwards). No Expo/RN upgrade, no
+media-library, image-picker, FFmpeg, network/auth or state-management package.
+`app.json` keeps orientation, four tabs, startup route and notification settings,
+and gains the three plugin entries with the exact permission strings (both
+microphone strings identical) plus the auto-added `expo-asset` plugin (asset
+patterns only; no permissions). Android `recordAudioAndroid: true` is the only
+added platform permission surface.
+
+### Verified status (Slice 5) — actual results, 2026-09-11
+
+Commands, run after the implementation, without touching unrelated files:
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **262 passed / 0 failed** (223 baseline + 39 new media tests) |
+| `TZ=Europe/Kyiv npm test` | 262 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 262 passed / 0 failed |
+| `TZ=UTC npm test` | 262 passed / 0 failed |
+| `npm run typecheck` | clean (`tsc --noEmit`) |
+| `npm run lint` | **0 problems** |
+| `npx eslint .` | 0 errors, **3 warnings** — the pre-existing `calendar-notifications.test.mjs` (`advance`) and `calendar-store.test.mjs` (`registry`, `scheduledCount`) warnings; no new warnings, no suppression added |
+| `npx expo install --check` | “Dependencies are up to date” |
+| `npx expo-doctor` | **21/21 checks passed** (after adding the required direct `expo-asset` peer) |
+| `npm run export:ios` | succeeded → `dist/_expo/static/js/ios/entry-e25b5aa1efee711c997fdad07c553cde.hbc` (3.4 MB) |
+| root `npm run build` | completed; sites artifact verified (DB, MEDIA, migrations 0000–0002) |
+| `git diff --check` | clean |
+| protected hash compare | Plans, Calendar, notifications, theme, components, routes, types, Ideas **byte-identical** |
+
+New-test coverage maps onto the brief’s required list (all with injected fake
+native/file/clock/permission ports driving the SAME controller, repository,
+coordinator and journal store as the UI):
+
+1. **Permissions** — no startup prompt (no read/prompt before an action); granted
+   is read but never re-requested; undetermined is requested once; denied/
+   restricted/native-exception never prepare or start; an inactive app never
+   starts capture; returning from Settings refreshes state to ready without
+   auto-recording; late permission after cancel cannot revive a session.
+2. **One tap start / same control stop** for audio and video; duplicate start and
+   duplicate stop settle once; prepare/start rejection produces a typed error and
+   releases the native recorder; the video “recording ended” promise never blocks
+   stop; `undefined` result and native auto-stop + manual stop races settle exactly
+   once; flip is offered only when idle; background/interruption stops once and
+   never auto-resumes.
+3. **Limits** — exact 900,000 ms / 25,165,824 B and 600,000 ms / 83,886,080 B
+   boundaries pass; +1 byte/ms, zero bytes, unknown/zero duration and a
+   non-native MIME are rejected with distinct codes; a partially copied staging
+   file is rejected; the timer is monotonic (backwards wall clock ⇒ 0) and the
+   controller deadline requests the native stop once.
+4. **Cancel/races** — cancel during recording cleans the late native URI and never
+   attaches; cancel while adopting discards the freshly adopted draft; re-record
+   cleans only the abandoned take and returns to ready; a superseded owner or a
+   changed draft revision is refused before any write, keeping the file and lease.
+5. **End-to-end** — real repository `prepare` → real journal store → serialized V1
+   bytes → brand-new store/repository → `resolve` returns playable sources for
+   audio, video and multiple attachments (including a media-only entry); the raw
+   envelope contains no `file://`, base64, or binary; data-URL-like prose survives
+   verbatim.
+6. **Failures** — failed manifest write/copy removes the partial promotion but
+   keeps the retryable staging file; failed metadata write keeps previous bytes,
+   prepared files and leases, and the retry reuses the same take id without
+   duplicate entries/media; the same take id cannot be referenced by two entries;
+   foreign/unexpected object directories are never overwritten.
+7. **Delete ordering** — reader attachment removal and entry deletion persist the
+   metadata removal first (a failed write leaves the file and metadata intact) and
+   delete owned files only afterwards; missing files resolve as “unavailable” with
+   metadata retained; unowned/foreign metadata never deletes arbitrary paths.
+8. **Restart/crash/GC** — an owned orphan after promotion (crash before the JSON
+   commit) is swept; a committed reference is retained; an interrupted delete is
+   retried by the next sweep; sweeping is blocked while the journal is unhydrated
+   or corrupt and never removes unknown manifests; paths derive from the current
+   root (no stored absolute path).
+9. **Preserved Slice 4 guarantees** — text-only Journal paths and all Ideas tests
+   are unchanged; per-field `changed`, untouched legacy fields, tags and existing
+   transcripts still round-trip; >100k-character bodies still work; Records dates
+   keep 0001–9999 and pass the timezone matrices.
+
+Import audit (checked by inspection, not by a test): native media imports live
+only in `src/services/media/*` and the two `src/features/journal/media/*` components;
+there are no root/web/browser/Telegram/backend imports, no `fetch`/HTTP client, no
+base64/ArrayBuffer/`data:` media payloads, no `window`/`document`/`localStorage`
+usage and no API token or owner header anywhere in mobile sources or config.
+
+### Production-path vs. injected-port coverage (Slice 5)
+
+- **Production-used code**: recorder controller (all states/permission/timer/cancel
+  policy), local media repository (adopt/prepare/resolve/discard/reconcile),
+  manifest parser/serializer, coordinator (leases, ordering, sweeps), journal
+  model/store media mutations, and the Expo adapters/`useJournalRecorder` wired
+  through `journalMediaRuntime`. The recorder overlay is the only surface that
+  mounts `CameraView`/`useAudioRecorder`; the editor owns text state above it.
+- **Injected-only**: the native recorder promise, camera handle, `File`/`Directory`,
+  permission responses and the monotonic clock. No test asserts native behavior;
+  adapter wiring was reviewed by reading the installed SDK typings (audio
+  `prepareToRecordAsync`/`record({forDuration})`/awaited `stop`/`getStatus`,
+  camera `recordAsync`+sync `stopRecording`, `maxDuration`/`maxFileSize`,
+  `videoBitrate` prop with `codec: 'avc1'`, `createVideoPlayer` for the loaded
+  duration, current `File`/`Directory`/`Paths` API — no deprecated workaround).
+
+### Remaining limitations (Slice 5)
+
+- **Cloud is not implemented and not faked**: no upload, no sync, no remote
+  playback, no transcription execution/editing/retry, no audio-track extraction,
+  no queue, no fake progress and no cloud badge. A future authenticated repository
+  can return a remote playback source without changing `JournalMedia` or the
+  journal envelope.
+- Media files are app-private sandbox files: they are not in the Photos library,
+  are gone if the app is deleted and are not transferable between installations.
+  Absolute container paths are intentionally not persisted.
+- Unsaved editor drafts and in-progress recordings do not survive process
+  termination; committed entries and their files do (verified through real
+  envelopes and a real new store/repository).
+- Cleanup after a failed file delete is retryable but not instantaneous, and
+  remote deletion is never claimed for local deletes.
+- Background recording/playback and picture-in-picture are disabled by config;
+  capture stops once when the app leaves the foreground and never resumes.
+- The existing backend body cap (5,000 characters) still blocks backend-write
+  compatibility for long entries and is intentionally untouched.
+
+### Pending native/device verification (Slice 5) — must stay pending
+
+Not observed (only Xcode CommandLineTools are installed; no simulator and no
+device were used, and no screenshots or native logs exist): fresh-install camera
+and microphone prompts and denial/Settings recovery; physical iPhone front/back
+capture and portrait orientation; audio input routing (speaker/headset/BT);
+one-tap stop and limit auto-stop; recorded file container/duration/size on device;
+playback and scrubbing; rapid taps and interruption/lock/background; cancel and
+re-record cleanup on disk; media-only and multiple attachments through a real
+save; offline restart convergence after save; disk-full/write failures; long
+editor with keyboard/caret at the end; compact/notched safe areas and Dynamic
+Type/VoiceOver; Plans/Calendar/Ideas smoke tests and that no unsolicited
+notification or media prompt appears. Config-plugin changes also require a new
+native binary before the permission strings can be observed.
+
+### Slice 5 review fixes — race safety, retry and deletion guarantees (2026-09-11)
+
+Nine review findings were fixed after the first Slice 5 verification pass. Every
+fix is covered by a regression test that drives the same production controller,
+repository, coordinator and journal store as the UI (fake native/file/permission/
+clock ports only). No product behavior outside Journal local media was touched;
+Slice 6 was not started.
+
+| # | Finding | Fix | Regression |
+| --- | --- | --- | --- |
+| 1 | A sweep could delete a file committed while it was in flight | `createJournalMediaCoordinator` now serializes commit/adopt/delete/sweep through one operation lock, and `LocalMediaRepository.reconcile` receives **re-read providers** (`references()`, `leasedSessions()`, `leasedMedia()`, `canDelete()`) that it calls immediately before EVERY delete. A throwing/unavailable reader means "still needed" ⇒ the file is kept. | Sweep paused mid-flight (`pauseListing`) while a commit lands: the committed object survives and is retained; the same for a lease registered mid-sweep; a `canDelete: () => false` gate and a throwing reader both leak the file instead of deleting it; the coordinator-level test queues a sweep before and after a commit in both orders |
+| 2 | iOS resets the recorder duration after `stop()`, hiding real durations | The adapter captures the authoritative duration while recording (`readRecorderDurationMs`, refreshed by the status listener) and passes it through the new pure `finalizeAudioTake` policy (max of before/after/session values). Clamping was removed, so an over-limit take reaches validation with its real duration. | `finalizeAudioTake` keeps 900,000 ms over a post-stop 0 and returns it unclamped; the controller rejects 900,400 ms (`duration-too-long`) and accepts exactly 900,000 ms |
+| 3 | A stale recorder could attach to a newer editor | `RecorderPorts` gained an `identity.authorize({ captured, current })` port. `useTake` consults it BEFORE adoption and again AFTER the adoption await; the surface compares its live sheet identity, draft revision, editor busy state and the controller's session/generation. The sheet additionally requires the completion to come from the session IT opened. | Refused attach ⇒ nothing is adopted and the take is cleaned; adopted-then-refused ⇒ the adopted copy is discarded, never attached; the sheet's session/identity gate is wired through `onSessionOpened` |
+| 4 | A late finalization could return a cancelled recorder to preview | `cancel()` and `reRecord()` bump the generation and re-check their own token before publishing any state; cancelling during native start installs (and retains) a cleanup handler for the late URI; stale finalizations discard the temp file exactly once. | Cancel while `start` is in flight ⇒ the late URI is removed exactly once and no preview appears; cancel during stop/finalization ⇒ no preview, temp cleaned; re-record is refused while a finalization is in flight and cleans the abandoned take afterwards |
+| 5 | Video permission refresh only checked the camera | `refreshPermission()` is generation-scoped and, for video, re-reads camera AND microphone — ready only when both are granted; the missing one produces the correct error. | Camera granted + microphone denied ⇒ video never prepares/starts and stays denied; the same-kind stale refresh from a replaced session is ignored (session 2 keeps recording) |
+| 6 | A retry trusted directory/manifest existence | The idempotent `prepare` branch now also stats the durable recording: present, not a directory, non-zero and exactly the manifest size. Otherwise it fails with `file-missing` and no metadata is written. | Retry after deleting the recording, and after truncating it, fails safely with unchanged Journal bytes and zero committed rows; a complete file retries idempotently with the same take id |
+| 7 | Leases started too late and could live too long | Recorder sessions lease their staging directory from the moment the surface opens (`leaseSession`); the sheet leases an adopted take at Use (`leaseDraftMedia`); the coordinator keeps leases on a failed save and releases them on success; explicit abandonment (`abandonDrafts`) releases the lease and removes only that take's own staged/promoted files (guarded by fresh references). | An abandoned staging take is reclaimed while a leased one survives the same sweep; a promoted-but-unsaved take survives while leased and is kept by the committed reference after the save; abandonment cleans the file, releases the lease and leaves no leaked session; a targeted cleanup failure is reported, keeps the file and is reclaimed by the next sweep; a released session lease makes its staging reclaimable |
+| 8 | The audio control kept "pause" after pausing | `LocalAudioPlayer` derives its state from the REAL native `status.playing` (plus `didJustFinish`), using the shared `nextAudioCommand`/`afterAudioCompletion` policy: play → pause → resume, completion pauses, rewinds and releases exclusivity. | Production-policy regression: three taps produce play/pause/play and completion rewinds/releases; no detached helper |
+| 9 | Deletion-safety audit of every destructive path | Sweep (re-read guards), cancel/re-record (native temp + own staged file only, containment-checked), attachment delete and entry delete (metadata first, then a guarded sweep), stale-recorder cleanup, draft abandonment (valid ownership record + fresh reference/lease check). `discard` now removes only the take's own staged file and its session directory only when empty, so a sibling take of the same session can never lose its file. | Same-session sibling take survives another take's discard; foreign/unowned metadata and unknown directories still delete nothing |
+
+Additional hardening found during this pass: the recorder controller is created exactly once per surface — the surface's authorize callback is late-bound through a stable slot (`createCallbackSlot`), so an inline callback can no longer recreate the controller (and lose the session) on every render.
+
+#### Verification after the review fixes (actual, 2026-09-11)
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **282 passed / 0 failed** (223 baseline + 59 media tests) |
+| `TZ=Europe/Kyiv npm test` | 282 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 282 passed / 0 failed |
+| `TZ=UTC npm test` | 282 passed / 0 failed |
+| `npm run typecheck` | clean |
+| `npm run lint` | 0 problems |
+| `npx eslint .` | 0 errors, the same 3 pre-existing Calendar test warnings (no new warnings, no suppression) |
+| `npx expo install --check` | “Dependencies are up to date” |
+| `npx expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | succeeded → `dist/_expo/static/js/ios/entry-89187eeda4a362f71abfa82909a4bed9.hbc` |
+| root `npm run build` | completed, sites artifact verified |
+| `git diff --check` | clean |
+| leakage scans | no Telegram/browser/root/backend imports, no HTTP client, no base64/ArrayBuffer/`data:` media payloads, no secrets; Expo media imports confined to `src/services/media/*` and the two media components |
+
+New test files: `tests/media-playback.test.mjs`; extended: `tests/media-recorder.test.mjs`,
+`tests/media-repository.test.mjs`, `tests/media-coordinator.test.mjs`. The 223
+Slice 1–4 baseline tests are unchanged.
+
+Native/device verification for these race-safety fixes remains **pending**: no
+simulator or device was available, and unit tests with injected ports do not prove
+camera, microphone, recording, playback or permission behaviour on hardware.
+
+### Slice 5 review fixes — round 2: ownership transfer, last-moment guards, permissions (2026-09-11)
+
+Ten further review findings were fixed after the race-safety pass. Scope stayed
+inside Journal local media; Slice 6 was not started.
+
+| # | Finding | Fix | Regression |
+| --- | --- | --- | --- |
+| 1 | After «Использовать», recorder teardown deleted the editor-owned take | `useTake()` now performs an explicit **ownership transfer**: on success the recorder clears its `take`/`adoptedDraft` references before returning, so its `cancel()`/unmount cannot delete the transferred staging file. The caller (surface) is responsible for abandoning it if it cannot accept it | Record → Use → recorder cancel/unmount: `discard` is never called, nothing the editor owns is deleted, only the native temp disappears; a follow-up editor abandonment deletes it explicitly through the same repository port |
+| 2 | Cancellation during `releaseNative` could resurrect preview | Finalization re-validates the generation/session after EVERY await (validation, `releaseNative`, temp cleanup, failure paths) before publishing state or retaining the take | Exact interleaving: the take exists, finalization enters the `releaseNative` await, cancel runs to `cancelled`, the release resolves → state stays `cancelled`, no preview, the temp file is removed exactly once |
+| 3 | Automatic (iOS) audio stop had no valid duration; old durations could leak | The production adapter now tracks the duration CONTINUOUSLY (`audioDurationTracker.ts`, the same status-polling the SDK's `useAudioRecorderState` uses at a 250 ms cadence, plus status events), resets all tracking at the start of every take, and feeds both manual and automatic stops through `finalizeAudioTake` without clamping; a take with no valid new sample fails instead of reusing a previous value | A: automatic stop after 5 s → 5000 ms; B: manual stop after 5 s → 5000 ms; C: a new take with no sample does NOT reuse 5000 ms (and its own sample is used when present); D: exactly 900,000 ms kept; E: 900,001 ms not clamped; F: the post-stop zero never erases the sampled value; poll ticks and status events are interchangeable |
+| 4 | Sweep guards were read before an async ownership lookup | `reconcile` now performs every async ownership lookup FIRST, then re-reads all guards (references, session leases, media leases, `canDelete`, ownership/path validity) synchronously with no await before the delete; the delete call is the only awaited step. Uncertain or throwing readers ⇒ skip the delete | Interleaving: the manifest read pauses, a reference (and separately a lease) is added during that await, the read completes → the final guard sees it and the file survives |
+| 5 | Revoking a permission while `ready` left video startable | Readiness is derived from BOTH tracked permissions; a refresh that finds either unusable leaves `ready` immediately, and `startVideoRecording` re-checks both before any native call | Both granted → ready; revoke microphone → refresh → `denied`, start performs no native capture; restore both → ready without recording; the same for a revoked camera |
+| 6 | Session leases could accumulate | New `sessionLeaseTracker.ts` (production-used by the hook): the session is leased SYNCHRONOUSLY when its id is created (inside the id factory, before any native await), a new session releases the previous one first, the same id is idempotent, and unmount releases whichever session is current. The obsolete post-await registration path was removed | A→B: A released, B leased; B→C (permission retry): B released; re-open of the same id: no churn; unmount: released (twice-safe); empty id never leased; 50 successive restarts keep exactly one live lease; the tracker exposes no asynchronous registration path |
+| 7 | Pre-adoption authorization used rendered state | New `attachAuthorization.ts` (the surface's only authorization logic) reads the parent's SYNCHRONOUS current-sheet check and lock state plus the live draft identity/revision and recorder session/generation. The sheet now passes `isCurrent={() => isCurrent()}` and `isEditorBusy={() => lock.isBusy() \|\| saving}` | Render-lag window reproduced: the parent synchronously replaces A with B before any rerender → A's pre-adoption check fails with `busy` (so no promotion happens) while B's own recorder remains allowed; busy, moved revision, changed sheet/draft/entry, replaced session/generation, null owner and unmounted surface are each refused |
+| 8 | Ownership phases were implicit | The five phases (native temp → recorder-owned take → adopted/staged take → transferred editor/draft take → committed Journal attachment) are documented with owner, protecting lease, cancel/unmount, save failure, abandonment and post-commit behavior; the recorder keeps no reference after a successful Use | Covered by the transfer regressions in rows 1 and 7 |
+| 9 | Await-boundary audit for stale completions | Every await in the controller (permission read/request, prepare, start, stop, finalize, release, temp cleanup, file validation, adopt, discard) is followed by a generation/session/owner re-check before any state publication or ownership transfer — including `releaseNative` after a failed prepare/start | Cancel-during-release, cancel-during-start, cancel-during-finalization, adopt-then-superseded and stale-permission regressions |
+
+> **Superseded by round 3:** the round-2 audio-duration row (continuous polling
+> feeding the finalizer) was replaced by an authoritative finalized-file duration
+> probe, and the detached `productionAdapter` test copy was replaced by the
+> injectable production binding. Rows 1, 3, 4, 5, 7 and 8 remain accurate; row 2
+> and the row-6 adapter note describe only the intermediate state.
+
+#### Verification after round 2 (actual, 2026-09-11)
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **300 passed / 0 failed** (223 baseline + 77 media tests) |
+| `TZ=Europe/Kyiv npm test` | 300 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 300 passed / 0 failed |
+| `TZ=UTC npm test` | 300 passed / 0 failed |
+| `npm run typecheck` | clean |
+| `npm run lint` | 0 problems |
+| `npx eslint .` | 0 errors, the same 3 pre-existing Calendar test warnings |
+| `npx expo install --check` | “Dependencies are up to date” |
+| `npx expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | succeeded → `dist/_expo/static/js/ios/entry-f21742396f7eead80113541fc5a3c925.hbc` |
+| root `npm run build` | completed, sites artifact verified |
+| `git diff --check` | clean |
+| leakage scans | no Telegram/browser/root/backend imports, no HTTP client, no base64/ArrayBuffer/data-URL payloads, no secrets; Expo media imports still confined to `src/services/media/*` + the two media components |
+
+New test files: `tests/media-audio-duration.test.mjs`, `tests/media-session-lease.test.mjs`,
+`tests/media-attach-authorization.test.mjs`; extended `tests/media-recorder.test.mjs`
+and `tests/media-repository.test.mjs`. The 223 Slice 1–4 baseline tests remain
+unchanged, and no Slice 6 / upload / transcription / backend / browser work exists.
+
+**Native/device verification remains pending** for all of the above: the audio
+sampling cadence, the automatic `forDuration` stop, permission revocation prompts,
+camera/microphone capture and playback were not observed on hardware (only Xcode
+CommandLineTools are installed). The unit regressions use injected ports and a fake
+recorder that mimics the documented iOS reset; they are not device evidence.
+
+### Slice 5 review fixes — round 3: session-scoped native teardown, authoritative duration (2026-09-11)
+
+Seven blocking findings were fixed after round 2. Scope stayed inside Journal local
+media; Slice 6 was not started. The recorder binding was refactored so its native
+dependencies are injectable: `recorderBindingsCore.ts` holds the production policy
+(session ownership, teardown authority, duration authority) and is exercised
+directly by tests, while `expoRecorderBindings.ts` only wires the installed Expo
+modules into it.
+
+| # | Finding | Fix | Regression (production code) |
+| --- | --- | --- | --- |
+| 1 | Teardown was kind-global: a stale session could release the newer session's recorder | `RecorderPorts.native` is now `openSession({sessionId, kind})` returning a `NativeRecordingSession` that owns its result promise, stop, release, auto-stop registration, duration sampling and status listener. The controller stores the handle per session and every cleanup path uses an explicitly captured handle. Shared hardware is guarded twice: the status-listener slot is owned by exactly one session (a stale release only clears the listener IT installed), and shared device-mode changes go through a queue that re-checks ownership when the task actually runs — a superseded release is skipped, and if it already landed the newer session's recording mode is re-asserted | Late release of A resumes after B is recording: `restorePlaybackMode` is not called, B's listener is untouched, B stays `recording` and can stop normally |
+| 2 | Old cancellation could mutate B's take/state (and a stale path could publish `idle`) | Every cancellation captures its own handle and take before any await; cleanup operates only on those captured resources (`clearOwnedTake` clears the current take only when it IS that captured take), and every await is followed by a generation/session re-check before publishing. `begin` re-checks before publishing `idle`, installs its own late-URI cleanup and releases only its own handle | A's cancel paused in release + B reaching preview: B stays `preview`, its take file is untouched, `useTake` succeeds; a cancelled session with a stale in-flight start stays `cancelled` (never `idle`); recorder-side ownership-transfer tests still pass |
+| 3 | Sibling directory cleanup raced with adoption | `discard` deletes only the take's own staged file and never recursively deletes the session directory; the repository additionally serializes adopt/prepare/discard/owned-removal/sweep through one lock. Directory removal happens only in the sweep, only for unleased sessions, with guards re-read synchronously immediately before the delete | Discard paused mid-removal while a sibling is adopted into the same session: the sibling survives (and still resolves after promotion); two pre-existing sibling takes: discarding one keeps the other resolvable |
+| 4 | Automatic iOS audio duration relied on polling | The finalized-file duration is now authoritative: the binding loads the finalized file with the SDK's audio player and uses its decoded duration. Sampling stays for the UI only. Every take starts from an empty duration state, and an unavailable probe fails the take (`duration-unknown`) instead of accepting a stale sample | Final 5 000 ms with a 4 750 ms last poll → 5 000 ms; 900 001 ms rejected as over-limit while a lower poll exists; exactly 900 000 ms accepted; iOS post-stop reset to 0 does not change the result; a failing probe fails safely; a new take cannot inherit the previous duration |
+| 5 | Playback errors were ignored | `derivePlaybackState` (production policy used by both players) turns a native status error, a rejected play/pause/seek command or a missing/undecodable file into an honest unavailable state with a Retry that re-resolves the committed media; no retry button is rendered when no retry action exists. Video surfaces `statusChange` errors the same way; metadata stays intact | Load/status error, rejected play, rejected seek, retry-success, retry-failure and normal play/pause/resume policy cases |
+| 6 | Tests used a detached adapter copy | The binding is now injectable (`createRecorderPortsFromDeps`) with the real module as the only wiring of Expo; the detached test adapter was deleted together with the now-unused `audioDurationTracker`/`audioFinalization` helpers | All session-scope and duration regressions above run the real binding core + real controller; the surface teardown is the same `createRecorderSurfaceLifecycle` the hook uses, and the end-to-end test goes Use → production teardown → real coordinator save with the file resolvable |
+| 7 | Existing transcripts were detected but never rendered | `describeTranscript` (production presentation policy) exposes the full stored transcript text with a collapse/expand display, no fake section when absent, and honest notes for existing status metadata. No transcription execution/upload/editing | Transcript exposed (including long text kept whole), no fake content without a transcript, honest pending/error notes, transcript shown regardless of status |
+
+An additional audit (finding 9) found and fixed one more session-scope leak in the
+same class: the controller's auto-stop registration is now owned by the session that
+installed it, so a stale release can only clear its own registration.
+
+#### Verification after round 3 (actual, 2026-09-11)
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **314 passed / 0 failed** (223 baseline + 91 media tests) |
+| `TZ=Europe/Kyiv npm test` | 314 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 314 passed / 0 failed |
+| `TZ=UTC npm test` | 314 passed / 0 failed |
+| `npm run typecheck` | clean |
+| `npm run lint` | 0 problems |
+| `npx eslint .` | 0 errors, the same 3 pre-existing Calendar test warnings |
+| `npx expo install --check` | “Dependencies are up to date” |
+| `npx expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | succeeded → `dist/_expo/static/js/ios/entry-1f0252e968dff514ef8f44a4ffebe2ce.hbc` |
+| root `npm run build` | completed, sites artifact verified |
+| `git diff --check` | clean |
+| leakage scans | no Telegram/browser/root/backend imports, no HTTP client, no base64/ArrayBuffer/data-URL payloads, no secrets; Expo media imports confined to `src/services/media/*` and the two media components |
+
+New test files: `tests/media-binding-session.test.mjs`,
+`tests/media-attachment-presentation.test.mjs`; extended
+`tests/media-recorder.test.mjs`, `tests/media-repository.test.mjs`,
+`tests/media-coordinator.test.mjs`, `tests/media-playback.test.mjs`. The detached
+`tests/media-audio-duration.test.mjs` was removed because it exercised a copy of the
+production timing rather than the production code. The 223 Slice 1–4 baseline tests
+remain unchanged, and no Slice 6 / upload / transcription execution / backend /
+browser work exists.
+
+**Native/device verification remains pending.** In particular the real
+decoded-duration probe, the automatic `forDuration` stop, permission revocation,
+camera/microphone capture, playback and the session-scoped teardown were not
+observed on hardware (only Xcode CommandLineTools are installed). The regressions
+inject fake native dependencies into the real binding core and are not device
+evidence.
+
+### Slice 5 review fixes — round 4: process-global hardware ownership (2026-09-11)
+
+Seven blockers from the fourth review were fixed. Scope stayed inside Journal local
+media; Slice 6 was not started.
+
+| # | Finding | Fix | Regression (real binding core) |
+| --- | --- | --- | --- |
+| 1 | Ownership/queue was per binding instance while the hardware is process-global | New `recorderHardwareCoordinator.ts`: ONE process-level coordinator shared by every binding instance (production uses the module singleton; tests share one instance across the bindings they build). It owns the single authoritative owner (`{sessionId, epoch, kind}`), one queue for ALL hardware operations (mode changes, prepare, start, stop, release) and the status-listener slot. Operations re-check ownership when they run, and the ownership handoff itself is queued behind in-flight hardware work, so a new session cannot take over while an older hardware-affecting operation is settling. Stale work is skipped and can neither stop, release nor reconfigure a newer session's recorder | Two surfaces sharing one coordinator: A's stop paused at the native stop → B starts (accepted) → gate resolves → B records and stops normally while A's late completion is skipped; A's paused mode restore cannot leave B in playback mode; a second binding instance cannot disable the first's recording; a stale task/mode change after a handoff is `skipped`; five direct coordinator invariant tests |
+| 2 | Video re-record reused a disposed native handle | Finalization now releases AND forgets the handle (`closeOwnedSession` clears the controller's reference before the preview is published), so a finalized handle is single-use; re-record opens a FRESH session id + generation + handle before returning to a camera-ready state | Video: record → stop/finalize → preview → re-record → `ready` → record again: two native camera records, two session ids, the disposed handle never reused; audio: a finalized handle is never reused for the next take |
+| 3 | Backgrounding during preparation could still start the native capture | The binding's `isLifecycleAuthorized` (real app state in production) is re-checked immediately BEFORE the native start; when it is false the native start is never called, only that session's prepared resources are released, and the surface returns to idle with a typed `background` failure (no recording, no error card, newer sessions untouched) | Prepare paused → app backgrounded → prepare resumes: `native start calls = 0`, no recording, state idle, only that session's mode restored |
+| 4 | Playback failures were presented but not cleaned up | New `playbackController.ts` (used by both players): one failure path (mark failing → guarded pause → guarded release → clear exclusive playback ownership → honest unavailable state), guarded pause/release on switching and unmount, completion rewind failures caught and surfaced, exclusivity claimed/released once per cycle, and retry starting from a clean released state with a fresh player | Play/pause/resume through real commands; rejected play, pause and seek each stop+release+clear exclusivity; native status error while playing; failing completion rewind (no unhandled rejection asserted); successful completion rewinds and stays replayable; unmount with rejecting pause+release; missing file with retry; failed retry stays honest |
+| 5 | Race tests did not actually pause the operations they claimed | The fake native dependencies now AWAIT their gates inside the exact production operation (mode enable/restore, prepare, stop, camera record), record an explicit pause/resume order trace, and the tests assert that A really reached the gate before B advances | The five race tests above fail on the pre-fix implementation; timing was not used to make anything pass |
+| 6 | Shared-hardware invariants were undocumented | The invariants (one owner; instance ≠ ownership boundary; session+epoch is the boundary; stale release scoped to its exact handle; global mode changes require current ownership; queue tasks re-check on run; in-flight completion re-checks after await; B never affected by late A) are documented in the README and directly tested in `tests/media-hardware-coordinator.test.mjs` | Coordinator test suite (ownership handoff, FIFO skips, mode changes, listener slot, stale completions) |
+| 7 | Handle lifetime was implicit | The explicit states (new session → handle → preparing → recording → stopping → finalized → released/forgotten → preview; a released handle is unusable forever; re-record = new session id + handle) are documented and enforced by clearing the controller's handle at finalization | Covered by the video/audio fresh-session regressions |
+
+#### Verification after round 4 (actual, 2026-09-11)
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **323 passed / 0 failed** (223 baseline + 100 media tests) |
+| `TZ=Europe/Kyiv npm test` | 323 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 323 passed / 0 failed |
+| `TZ=UTC npm test` | 323 passed / 0 failed |
+| `npm run typecheck` | clean |
+| `npm run lint` | 0 problems |
+| `npx eslint .` | 0 errors, the same 3 pre-existing Calendar test warnings |
+| `npx expo install --check` | “Dependencies are up to date” |
+| `npx expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | succeeded → `dist/_expo/static/js/ios/entry-f9fbeadada3430e9c4a1cf2c2d2b7c80.hbc` |
+| root `npm run build` | completed, sites artifact verified |
+| `git diff --check` | clean |
+| leakage scans | no Telegram/browser/root/backend imports, no HTTP client, no base64/ArrayBuffer/data-URL payloads, no secrets; Expo media imports confined to `src/services/media/*` and the two media components |
+
+New test files: `tests/media-hardware-coordinator.test.mjs`; rewritten/extended:
+`tests/media-binding-session.test.mjs` (real gates), `tests/media-playback.test.mjs`
+(real commands against rejecting fakes). `playbackState.ts` and
+`audioPlaybackPolicy.ts` were removed once `playbackController.ts` superseded them.
+The 223 Slice 1–4 baseline tests remain unchanged, and no Slice 6 / upload /
+transcription execution / backend / browser work exists.
+
+**Native/device verification remains pending:** the real decoded-duration probe,
+automatic `forDuration` stop, permission revocation, camera/microphone capture,
+playback and the process-global hardware handoff were not observed on hardware (only
+Xcode CommandLineTools are installed). The regressions inject fake native
+dependencies into the real binding core and coordinator and are not device evidence.
+
+### Slice 5 review fixes — round 5: player lifetime + physical recorder handoff (2026-09-11)
+
+Four blockers from the fifth review were fixed in production code (not only in tests).
+Scope stayed inside Journal local media; Slice 6 was not started.
+
+| # | Blocker | Fix | Regression |
+| --- | --- | --- | --- |
+| 1 | The playback controller was recreated/disposed whenever parent callbacks changed, so a rerender disposed the native player and handed a removed player to a new controller (audio and video) | New production-used `playerLifecycle.ts`: one stable lifecycle per card. `setCallbacks` re-binds changing callbacks without touching the controller or the player; `setDevice(device, token)` refreshes the wrapper for the SAME player and retires the old controller exactly once only for a REAL player/source change; `dispose()` releases the active player exactly once and is idempotent. `MediaPlayers` uses this exact implementation for both players | A: rerenders with new callback identities → same controller, no `release`, playback continues, pause/resume works, and the callback that fired is the one from the render in effect; B: same for video; C: a real player replacement releases the old player once and the new one works; D: unmount releases exactly once (idempotent); rejecting pause on unmount still releases exactly once; failing switch cleanup releases once and yields exclusivity once |
+| 2 | `stop()` awaited BEFORE the native stop was registered, so a handoff could supersede A and skip its stop while A was still physically recording (both recorders recording) | Captures now register their PHYSICAL stop with the process-global coordinator the moment they start (`registerPhysicalStop`, before any stop await; cleared when the take settles). The coordinator's `activate` runs the previous owner's registered physical stop BEFORE transferring ownership, so logical staleness can never skip the stop a live capture needs and at most one physical recorder can be capturing. The core's own stop stays session/ownership guarded | Two surfaces with separate fake native recorders over one shared coordinator: (1) A's stop paused inside its own hardware task → B's start is refused a capture until A has physically stopped, then B records and the two are never recording together; (2) B asks for the hardware BEFORE A's logical stop → the handoff itself physically stops A (observed through the gate) and only then does B start |
+| 3 | Lifecycle authorization was only checked BEFORE queueing, so an app backgrounded while the start waited in the hardware queue still started a capture | The final gates (shared ownership current, handle not disposed, app-active authorization) now run INSIDE the queued callback immediately before the native capture call for both audio and video; a revoked lifecycle throws a typed `background` failure, releases only that session's prepared resources and publishes no recording | Audio: a start queued behind another hardware operation, backgrounded while waiting → native start calls = 0, state idle; Video: same through the shared queue → zero camera records |
+| 4 | A pause failure while switching clips was swallowed: exclusivity was released but the player was not, leaving hidden playback behind the new UI | `deactivate()` now enters the SAME centralized failure cleanup as every other failure (guarded stop → release → yield exclusivity → honest unavailable state) when the switch pause fails | The switch-failure regression was updated from expecting the old buggy behavior to asserting the real cleanup (state unavailable, player released once, exclusivity yielded once, no unhandled rejection); a normal successful switch still works |
+
+Re-audits: the coordinator's LOGICAL ownership (who may act) is now kept separate from
+PHYSICAL recorder state (who is capturing) and both are tested; player lifetime rules
+(callback update ≠ lifetime change; parent rerender ≠ controller recreation;
+active-media update ≠ disposal; only source/player replacement or unmount disposes)
+are documented and covered for audio and video.
+
+#### Verification after round 5 (actual, 2026-09-11)
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **333 passed / 0 failed** (223 baseline + 110 media tests) |
+| `TZ=Europe/Kyiv npm test` | 333 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 333 passed / 0 failed |
+| `TZ=UTC npm test` | 333 passed / 0 failed |
+| `npm run typecheck` | clean |
+| `npm run lint` | 0 problems |
+| `npx eslint .` | 0 errors, the same 3 pre-existing Calendar test warnings |
+| `npx expo install --check` | “Dependencies are up to date” |
+| `npx expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | succeeded → `dist/_expo/static/js/ios/entry-8ab6ec4b6b80b62986792a28e23842d0.hbc` |
+| root `npm run build` | completed, sites artifact verified |
+| `git diff --check` | clean |
+| leakage scans | no Telegram/browser/root/backend imports, no HTTP client, no base64/ArrayBuffer/data-URL payloads, no secrets; Expo media imports confined to `src/services/media/*` and the two media components |
+
+New test file: `tests/media-player-lifecycle.test.mjs`; extended
+`tests/media-binding-session.test.mjs` (physical-stop races, queued lifecycle for
+audio and video) and `tests/media-playback.test.mjs` (switch-failure cleanup). The
+223 Slice 1–4 baseline tests remain unchanged, and the earlier Slice 5 guarantees
+(process-global coordinator, session-scoped handles/listeners, fresh video
+re-record handle, finalized-file authoritative duration, ≤900 000 ms enforcement,
+sibling-file safety, sweep/lease/retry durability, Use → teardown → Journal save,
+transcripts, permissions, Slice 4 Journal behaviour) are unchanged and still pass.
+
+**Native/device verification remains pending** — the physical recorder handoff, the
+real decoded-duration probe, automatic `forDuration` stop, permission revocation,
+capture, playback and lifecycle behaviour across rerenders were not observed on
+hardware (only Xcode CommandLineTools are installed). The regressions inject fake
+native dependencies into the real binding core, coordinator and player lifecycle and
+are not device evidence.
+
+### Slice 5 review fixes — round 6: failed-stop blocking, video completion confirmation, active-playback identity (2026-09-11)
+
+Three blockers from the sixth review were fixed in production code. Scope stayed
+inside Journal local media; Slice 6 was not started.
+
+| # | Blocker | Fix | Regression |
+| --- | --- | --- | --- |
+| 1 | A failed physical stop was swallowed and the obligation deleted, so ownership transferred and two recorders ended up recording | The coordinator now keeps an explicit physical-stop DUTY with states `required` → `stopping` → `confirmedStopped` / `failed`. The handoff (a) retries the duty, (b) clears it ONLY on a confirmed stop, (c) on failure marks it `failed`, keeps it registered and refuses the handoff with a typed `HardwareHandoffBlockedError`. Nothing clears the duty in a `finally`; `abandonPhysicalStop` only drops an untouched duty, so stale cleanup/cancel cannot erase a failed obligation, and `deactivate` keeps the hardware reserved while a duty is outstanding. The controller maps the refusal to a typed recoverable `hardware-busy` failure with a Russian message | Two surfaces with separate fake recorders: A's stop rejects → A still physically records, B's native start count is 0, B never records and the duty is `failed`; the next start attempt retries A's stop (second native call) → A confirmed stopped → only then B records; a stale A cancel cannot erase the failed duty |
+| 2 | The video duty treated `stopRecording()` as capture completion, so a still-live camera could overlap with B | The video duty requests the stop and then awaits the ORIGINAL `record()` completion promise of that exact session; only that confirmation clears the duty. Completions never settle → blocked; reject → blocked; the take path no longer infers completion from the stop command, and the raw completion is kept separately from the settled take value | Gated completion: stop requested, A still capturing, B has 0 camera records; releasing the completion → A stopped → B records; rejecting completion → still blocked; rejecting `stopRecording` → still blocked; never both capturing |
+| 3 | A late `onFinished` from old media A cleared NEW active media B | `JournalSheet` now mutates the active media id only through identity-guarded helpers (`clearActivePlayback(current, mediaId)`, `claimActivePlayback(current, mediaId)`) used by the sheet itself, for activation, finish and failure cleanup | Successful A→B switch with a late A finish: B stays active; failed A pause during the switch (full failure cleanup, player released): B stays active and B's player is untouched; B's own completion clears it; a stale A/B callback after B→C leaves C active |
+
+Re-audit: the coordinator now separates LOGICAL ownership from PHYSICAL capture state
+and blocks a new capture until the previous one is *confirmed* stopped (audio: awaited
+native stop + recorder no longer reporting recording; video: awaited original
+completion). No timeout policy exists: an unconfirmable shutdown keeps the hardware
+blocked (documented, with a typed recoverable error) rather than starting a second
+capture speculatively.
+
+#### Verification after round 6 (actual, 2026-09-11)
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **342 passed / 0 failed** (223 baseline + 119 media tests) |
+| `TZ=Europe/Kyiv npm test` | 342 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 342 passed / 0 failed |
+| `TZ=UTC npm test` | 342 passed / 0 failed |
+| `npm run typecheck` | clean |
+| `npm run lint` | 0 problems |
+| `npx eslint .` | 0 errors, the same 3 pre-existing Calendar test warnings |
+| `npx expo install --check` | “Dependencies are up to date” |
+| `npx expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | succeeded → `dist/_expo/static/js/ios/entry-76eda5070eb9695f1d4f5a9e1c5f3c63.hbc` |
+| root `npm run build` | completed, sites artifact verified |
+| `git diff --check` | clean |
+| leakage scans | no Telegram/browser/root/backend imports, no HTTP client, no base64/ArrayBuffer/data-URL payloads, no secrets |
+
+New test file: `tests/media-active-playback.test.mjs`; extended
+`tests/media-binding-session.test.mjs` (failed-stop blocking, video completion
+gating/rejection, rejecting stop request, stale-cleanup obligation). The 223
+Slice 1–4 baseline tests remain unchanged and all earlier Slice 5 guarantees still
+pass (stable player lifecycle, process-global coordinator, session-scoped
+handles/listeners, queued lifecycle gates, fresh video handle on re-record,
+finalized-file duration, ≤900 000 ms enforcement, playback failure cleanup/retry,
+sibling-file safety, sweep/lease/retry durability, Use → teardown → Journal save,
+transcripts, permissions, Slice 4 Journal behaviour).
+
+**Native/device verification remains pending** — the physical handoff, real camera
+completion timing, duration probe, permission revocation, capture and playback were
+not observed on hardware (only Xcode CommandLineTools are installed). Regressions
+inject fake native dependencies into the real binding core, coordinator and player
+lifecycle and are not device evidence.
+
+### Slice 5 review fixes — round 7: physical reservations, eager activation outcomes, video active-playback parity (2026-09-12)
+
+Three remaining blockers from the seventh review were fixed in production code.
+Scope stayed inside Journal local media; Slice 6 was not started.
+
+| # | Blocker | Fix | Regression |
+| --- | --- | --- | --- |
+| 1 | The physical-stop duty was still keyed to the LOGICAL owner: `release()` cleared the owner and `activate()` only inspected the current owner's duty, so `A stop fails → release A → C activates` started C while A was still physically recording (and the same for a pending video `record()` completion) | The coordinator now keeps PHYSICAL RESERVATIONS fully independent from the logical owner. Each reservation carries `{owner, stop, state, attempts}` and is ONLY cleared on a confirmed stop (or by `abandonPhysicalStop` when it was never armed); `deactivate` clears the logical owner and nothing else. EVERY `activate()` first iterates ALL outstanding reservations, retries their shutdown and refuses with the typed `HardwareHandoffBlockedError` while any remains failed/unresolved — for owner A, stale A, or `owner === null` alike. `retryReservation()` shuts a session down without requiring logical ownership, and the logical release fires it without awaiting a shutdown that may never settle (so the release never hangs but the hardware stays blocked) | Production core + coordinator: A's stop rejects → cancel (logical release) → `owner === null` with the reservation still present → C's native start count is 0 and C reports `hardware-busy`; retrying the shutdown succeeds → only then C records. Video: A records, the stop is requested while the original `record()` completion is gated → cancel → B's camera `record()` count is 0 → only the original completion confirms the end → B records. A stale `cancel()` of A and B cannot erase the blocking reservation, and an explicit `owner === null` + unresolved-reservation case blocks `activate()` directly |
+| 2 | The activation promise created during session construction could reject (handoff-blocked) BEFORE `handle.start()` attached its consumer — the controller might still be awaiting permissions, or never call `start()` at all on a denial — producing a process-level unhandled rejection | Session construction settles the activation eagerly into a typed outcome (`{ ok: true, owner } | { ok: false, error }`) with handlers attached at creation, and `ownerOf()` re-throws the stored typed error only when a start/stop path actually consumes it (permission flow may finish before or after the activation, and `cleanup`/unmount consumes it safely; a stale outcome can never mutate a newer session) | Real process-level `unhandledRejection` trap: (a) activation refused while the permission prompt is pending → zero unhandled rejections, state stays `requesting-permission`, permission granted afterwards → typed `hardware-busy` and 0 native starts; (b) same but the permission is DENIED and `start()` is never called → zero unhandled rejections and a correct `denied` state; (c) unmount before the outcome settles → zero unhandled rejections |
+| 3 | Active-playback identity guarding existed for audio only: the video player neither used `onFinished` nor `onReleaseExclusive` and hardcoded `didJustFinish: false`, so a finished/failed video could leave its id active, while `JournalSheet` would still clear it unconditionally | `LocalVideoPlayer` now accepts `onFinished` (forwarded by `MediaAttachmentCard`), wires `onReleaseExclusive` to it, and reports REAL completion from expo-video's `playToEnd` event (with the error path keeping the centralized failure cleanup). The sheet's active id is mutated only through the shared identity-guarded helpers for BOTH kinds | Shared single `activeMediaId` (exactly like the sheet) driven through the production player lifecycle: audio A → video B with a late A finish leaves B; video A → audio B with a late A callback leaves B; a failed pause during a mixed switch leaves B and does not touch B's player; video natural completion and video error cleanup each clear their own id; A → B → C stale callbacks leave C; a finished video can re-claim itself on replay; plus a static assertion that the video player really uses `playToEnd`, releases exclusivity and receives `onFinished` |
+
+#### Test quality (round 7)
+
+Every new regression was checked against the PRE-FIX behaviour: with the coordinator
+mutated back to an owner-keyed reservation check and the activation promise left
+raw-rejecting, **6 of the 7 new reservation/activation regressions fail**
+(failed-stop blocking, stale-cleanup reservation erasure, `owner === null` blocking
+and all three unhandled-rejection scenarios), so the tests detect the reported bugs
+rather than restating the fix. The mutation was reverted before the final run below.
+
+#### Physical reservation audit (round 7)
+
+Every coordinator path that mutates the logical owner, the reservations, the stop duty or activation was re-audited: logical release ≠ physical release (`deactivate` only nulls the owner); `owner === null` never means the hardware is free; an unresolved reservation blocks ALL activation (any owner, stale owner or none); a `failed` duty stays globally blocking; a pending video `record()` completion stays globally blocking; only a confirmed stop/release deletes a reservation; and stale cleanup can only drop a reservation that was never armed. `retryReservation` never re-arms a confirmed reservation, and the logical release fires it without awaiting, so a release can never deadlock on an unresolvable capture while the hardware stays reserved.
+
+#### Activation promise audit (round 7)
+
+The eager async work in recorder/session construction was re-audited: hardware activation (eager typed outcome), audio finalization (never rejects — the duration probe failure is mapped to a result), the video completion chain (terminal `.catch`), registered physical stops (awaited inside the owned queue with try/catch) and the best-effort teardown calls (explicit `.catch`). No path can reject before its consumer attaches.
+
+#### Video playback audit (round 7)
+
+Video now matches audio for active-id claim, release-exclusive, finish, error, retry, player replacement, unmount and stale-callback identity guarding: completion (`playToEnd`) and failure both flow through the same centralized controller cleanup, `dispose()` on unmount yields exclusivity, and every sheet-side mutation is identity-guarded, so no video path can leave `activeMediaId` stale.
+
+#### Verification after round 7 (actual, 2026-09-12)
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **354 passed / 0 failed** (223 Slice 1–4 baseline + 131 media tests) |
+| `TZ=Europe/Kyiv npm test` | 354 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 354 passed / 0 failed |
+| `TZ=UTC npm test` | 354 passed / 0 failed |
+| `npm run typecheck` | clean |
+| `npm run lint` | 0 problems |
+| `npx eslint .` | 0 errors, the same 3 pre-existing Calendar test warnings |
+| `npx expo install --check` | “Dependencies are up to date” |
+| `npx expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | succeeded → `dist` |
+| root `npm run build` | completed, sites artifact verified |
+| `git diff --check` | clean |
+| leakage scans | no Telegram/browser/root/backend imports, no HTTP client, no base64/ArrayBuffer/data-URL payloads, no secrets |
+
+`tests/media-active-playback.test.mjs` was rewritten around ONE shared sheet-level
+active id (audio and video together, through the production player lifecycle) and
+`tests/media-binding-session.test.mjs` gained the reservation, activation-outcome and
+shared-state regressions (with a real process `unhandledRejection` trap). The 223
+Slice 1–4 baseline tests remain unchanged and all earlier Slice 5 guarantees still
+pass (stable playback lifecycle across rerenders, process-global hardware
+coordinator, single-use handles, queued AppState checks, fresh video handle after
+re-record, authoritative finalized audio duration, playback failure cleanup/retry,
+sibling-file safety, sweep/lease/retry durability, Use → teardown → Journal save,
+transcripts, permissions, Slice 4 Journal behaviour).
+
+**Native/device verification remains pending** — permission prompts, physical
+capture/handoff, playback and rerender behaviour were not observed on hardware (only
+Xcode CommandLineTools are installed). Fake-native regressions are not device
+evidence.
+
+### Slice 5 review fixes — round 8: coordinated audio-mode restore, native-controlled video ownership (2026-09-12)
+
+Two remaining blockers from the eighth review were fixed in production code. Scope
+stayed inside Journal local media; Slice 6 was not started.
+
+| # | Blocker | Fix | Regression |
+| --- | --- | --- | --- |
+| 1 | The release-time playback-mode restore called `deps.audio.restorePlaybackMode()` directly (fire-and-forget, outside the shared queue), so `A stop confirmed → A restore in flight → A released → B starts recording → delayed A restore resolves` left the process-global audio mode in `playback` while B was recording | The restore now goes through the shared coordinator: new `runAudioModeTransition(candidate, {enabled, apply})` runs on the SAME queue as activation/prepare/start/stop/release AND re-validates when it executes — it is skipped if a newer logical owner exists, if another session's physical reservation is unresolved, or if the session's own capture is still unresolved. Because every native start is queued behind it, a handoff either waits for an in-flight transition to settle or skips the stale one; a stale restore can never mutate the global mode underneath a newer owner | Gated restore INSIDE the real fake native call: A records → A stops successfully → A's restore enters and PAUSES → B requests a capture while it is paused → B's native start/enable counts are 0 (it waits; proof that no capture can begin before the transition settled) → gate released → final state is B recording, `owner === B`, global mode `recording`, and the trace shows `A:restore:done` before `B:enable`/`B:start`; a cross-binding variant (two binding instances, one shared coordinator, one shared global mode) proves a delayed A restore cannot corrupt B; a late release-time restore queued after B's handoff is `skipped`; a queued restore with a foreign unresolved reservation is `skipped`; and with no owner and no reservation it is applied |
+| 2 | A NATIVE-controlled video start (expo-video's own controls) called `onActivate()` straight from the event listener, so `JournalSheet` showed the video as active while the controller's `holdsExclusivity` stayed false — the later completion/error released nothing and the active id stayed stale forever | New controller API `onNativePlaybackStarted()` performs the SAME exclusivity claim `toggle()` does (idempotent, no player/controller recreation, compatible with toggle-based audio ownership), and a new production module `videoEventBridge.ts` maps the REAL expo-video events onto it: `playingChange(true)` → claim exclusivity + sheet claim, native pause → keep ownership (documented policy), `playToEnd` → completion (pause, rewind, yield exclusivity, guarded clear), `statusChange('error')` → the centralized failure cleanup (pause, release, yield exclusivity, guarded clear). `LocalVideoPlayer` wires the three real listeners through that exact bridge | Video cards are driven through the production bridge (never `toggle()`): a native start claims exclusivity and the shared active id; `playToEnd` and a status error each release exclusivity (`onReleaseExclusive` fires exactly once) and clear the id; a native pause keeps ownership and a later completion still clears; repeated `playingChange(true)` events claim/yield exactly once; late video/audio callbacks after a handoff leave the newer media active; A→B→C stale callbacks leave C; and a static check asserts the player uses the bridge for the real events instead of mutating sheet state directly |
+
+#### Mode-queue audit (round 8)
+
+All media-runtime global mode mutations were re-searched: the only production mode writes are the two `AudioModule.setAudioModeAsync` implementations in `useJournalRecorder.ts`, and their only call sites are the coordinator-queued enable (`runModeChange`) and the coordinator-queued, execution-time-validated restore (`runAudioModeTransition`). Prepare, native start/stop, activation and release are all queued, and the native start is gated inside its queued callback. Zero uncoordinated process-global mode mutations remain.
+
+#### Playback ownership audit (round 8)
+
+`JournalSheet.activeMediaId`, `playerLifecycle`, `playbackController` exclusivity and the native audio/video events are now one coherent ownership system: the sheet mutates the active id only through `claimActivePlayback`/`clearActivePlayback` and only from a card's activate/finish callbacks, those callbacks fire only from the lifecycle controller (which holds exclusivity whenever it claims), native video starts are routed through the same controller API, and unmount/switch/dispose release exclusivity through the same guarded path. No path can set the id while the controller owns nothing, or hold exclusivity while the sheet points at unrelated media.
+
+#### Test quality (round 8)
+
+Both new regression groups were checked against the pre-fix code: reverting the restore to a direct fire-and-forget call fails the two core-level mode-restore regressions; removing the execution-time validation fails the stale-restore and foreign-reservation guard tests; and reproducing the video defect (sheet claimed while exclusivity is not held) fails five of the video regressions. The video regressions no longer call `controller.toggle()` on the video path, matching the real UI.
+
+#### Verification after round 8 (actual, 2026-09-12)
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **362 passed / 0 failed** (223 Slice 1–4 baseline + 139 media tests) |
+| `TZ=Europe/Kyiv npm test` | 362 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 362 passed / 0 failed |
+| `TZ=UTC npm test` | 362 passed / 0 failed |
+| `npm run typecheck` | clean |
+| `npm run lint` | 0 problems |
+| `npx eslint .` | 0 errors, the same 3 pre-existing Calendar test warnings |
+| `npx expo install --check` | “Dependencies are up to date” |
+| `npx expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | succeeded → `dist` |
+| root `npm run build` | completed, sites artifact verified |
+| `git diff --check` | clean |
+| leakage scans | no Telegram/browser/root/backend imports, no HTTP client, no base64/ArrayBuffer/data-URL payloads, no secrets |
+
+`tests/media-binding-session.test.mjs` gained the mode-restore regressions (gated
+restore, cross-binding, stale/foreign-reservation guards) and
+`tests/media-active-playback.test.mjs` was rewritten to drive video through the
+production event bridge. The 223 Slice 1–4 baseline tests remain unchanged and all
+earlier Slice 5 guarantees still pass (physical reservation independent from the
+logical owner, failed stop globally blocking, video `record()` completion gating the
+handoff, eager activation rejection handling, process-global coordinator, single
+recorder, queued lifecycle gates, stable player lifecycle across rerenders, guarded
+active-identity callbacks, playback failure cleanup, fresh video handles, finalized
+file duration, sibling safety, sweep/lease/retry durability, Use → teardown → Journal
+save, transcripts, permissions, Slice 4 Journal behaviour).
+
+**Native/device verification remains pending** — the audio-mode restore ordering,
+native-controlled video playback/ownership and physical capture were not observed on
+hardware (only Xcode CommandLineTools are installed). Instrumented fakes are not
+device evidence.
+
 ### iPhone verification status (all slices)
 
 **Native launch/notification delivery/visual/VoiceOver acceptance PENDING** on all
@@ -870,18 +1496,26 @@ Records reminders, and AI.
    is an app policy (max 48 pending); OS delivery is subject to user/system
    notification settings.
 5. Journal bodies have no local cap but are not backend-write compatible above
-   the web API's 5,000-character limit; media is metadata-only (no recording,
-   upload, playback or transcription) and local deletion never claims remote
-   deletion.
+   the web API's 5,000-character limit. Journal media is now really recorded,
+   stored and played **locally**; upload, sync, remote playback and transcription
+   remain deferred (no safe mobile auth/owner-identity contract on this machine),
+   and local deletion never claims remote deletion.
 
 ### Subsequent slices (all pending)
 
 - Slice 4 — Journal + Ideas. **Delivered** (local text/CRUD, history/search,
   filters, metadata-only media schema); native acceptance still pending.
-- Slice 5 — Native audio/video recording and upload (not started).
+- Slice 5 — Native journal audio/video: **local branch delivered and hardened three
+  times** (session-scoped native teardown, authoritative finalized-media duration,
+  serialized last-moment deletion guards, honest playback recovery, read-only
+  transcript display)
+  (recording, preview, re-record, multiple attachments, durable owned files,
+  offline playback, permission UX, lease-based cleanup/GC, serialized destructive
+  sweeps, verified retries, identity-bound recorders); authenticated
+  upload/sync/transcription deferred by evidence. Native acceptance pending.
 - Slice 6 — Finance (not started).
 - Slice 7 — Polish, onboarding, accessibility, visual acceptance (not started).
 
-Do not treat Slices 1–4 as passed until the iPhone acceptance items above are
+Do not treat Slices 1–5 as passed until the iPhone acceptance items above are
 completed on hardware/simulator. This file records actual results; pending items
 must not be relabeled as verified.

@@ -21,9 +21,14 @@ import {
 import type { JournalEntry } from '@/types/journal';
 import {
   addEntry,
+  addEntryWithMedia,
   editEntry,
+  editEntryWithMedia,
   removeEntry,
+  removeEntryMedia,
+  type EditEntryMediaChange,
   type JournalEntryInput,
+  type JournalMediaAttachmentInput,
   type JournalValidationReason,
 } from './journalModel';
 
@@ -62,8 +67,22 @@ export type JournalStore = {
   load(): Promise<void>;
   retryLoad(): Promise<void>;
   add(input: JournalEntryInput, date: string): Promise<JournalMutationResult>;
+  /** New entry with prepared attachment METADATA in one envelope write. */
+  addWithMedia(
+    input: JournalEntryInput,
+    date: string,
+    media: readonly JournalMediaAttachmentInput[],
+  ): Promise<JournalMutationResult>;
   edit(id: string, input: JournalEntryInput): Promise<JournalMutationResult>;
+  /** Merge attachment additions/removals into the LATEST committed row. */
+  editWithMedia(
+    id: string,
+    input: JournalEntryInput,
+    change: EditEntryMediaChange,
+  ): Promise<JournalMutationResult>;
   remove(id: string): Promise<JournalMutationResult>;
+  /** Remove exactly one committed attachment (metadata first). */
+  removeMedia(entryId: string, mediaId: string): Promise<JournalMutationResult>;
 };
 
 const INITIAL_ENTRIES: readonly JournalEntry[] = deepFreezeEntries([]);
@@ -220,5 +239,56 @@ export function createJournalStore({
     return commit(result.entries);
   }
 
-  return { getSnapshot: () => state, subscribe, load, retryLoad, add, edit, remove };
+  async function addWithMedia(
+    input: JournalEntryInput,
+    date: string,
+    media: readonly JournalMediaAttachmentInput[],
+  ): Promise<JournalMutationResult> {
+    const blocked = gate();
+    if (blocked) return blocked;
+    const id = createId();
+    if (id.length === 0 || entries.some((entry) => entry.id === id)) {
+      errorText = 'Не удалось создать запись: конфликт идентификатора. Повторите попытку.';
+      publish();
+      return { ok: false, reason: 'duplicate-id' };
+    }
+    const result = addEntryWithMedia(entries, { ...input, id, date, now: now(), media });
+    if (!result.ok) return { ok: false, reason: result.reason };
+    const committed = await commit(result.entries);
+    if (!committed.ok) return committed;
+    return { ok: true, id: result.entry.id };
+  }
+
+  async function editWithMedia(
+    id: string,
+    input: JournalEntryInput,
+    change: EditEntryMediaChange,
+  ): Promise<JournalMutationResult> {
+    const blocked = gate();
+    if (blocked) return blocked;
+    const result = editEntryWithMedia(entries, id, input, change, now());
+    if (!result.ok) return { ok: false, reason: result.reason };
+    return commit(result.entries);
+  }
+
+  async function removeMedia(entryId: string, mediaId: string): Promise<JournalMutationResult> {
+    const blocked = gate();
+    if (blocked) return blocked;
+    const result = removeEntryMedia(entries, entryId, mediaId, now());
+    if (!result.ok) return { ok: false, reason: result.reason };
+    return commit(result.entries);
+  }
+
+  return {
+    getSnapshot: () => state,
+    subscribe,
+    load,
+    retryLoad,
+    add,
+    addWithMedia,
+    edit,
+    editWithMedia,
+    remove,
+    removeMedia,
+  };
 }

@@ -33,6 +33,7 @@ import JournalSheet, { type JournalCompletionOutcome } from '../journal/JournalS
 import type { JournalEntryInput } from '../journal/journalModel';
 import { historyOrder, searchEntries } from '../journal/journalSelectors';
 import { journalStore, useJournalStore } from '../journal/useJournalStore';
+import { mediaCoordinator } from '@/services/media/journalMediaRuntime';
 import { formatJournalFullDate, todayIso } from './recordsDates';
 import {
   applySheetCompletion,
@@ -106,6 +107,16 @@ export default function RecordsScreen() {
     void journalStore.load();
     void ideaStore.load();
   }, []);
+
+  // One startup sweep of owned media AFTER hydration succeeds: committed files
+  // are kept, abandoned staging/prepared files are removed, corrupt/unhydrated
+  // state blocks the sweep instead of guessing. No background service.
+  const mediaReconciledRef = useRef(false);
+  useEffect(() => {
+    if (journal.phase !== 'ready' || mediaReconciledRef.current) return;
+    mediaReconciledRef.current = true;
+    void mediaCoordinator.reconcile();
+  }, [journal.phase]);
 
   const today = todayIso(new Date());
   const orderedEntries = useMemo(() => historyOrder(journal.entries), [journal.entries]);
@@ -220,9 +231,6 @@ export default function RecordsScreen() {
   }
   async function editJournalEntry(id: string, input: JournalEntryInput) {
     return journalStore.edit(id, input);
-  }
-  async function removeJournalEntry(id: string) {
-    return journalStore.remove(id);
   }
   async function addIdeaEntry(input: IdeaInput) {
     return ideaStore.add(input);
@@ -533,7 +541,10 @@ export default function RecordsScreen() {
             onEditSaved={handleJournalEditSaved}
             onAdd={addJournalEntry}
             onEdit={editJournalEntry}
-            onRemove={removeJournalEntry}
+            onCommitMediaCreate={mediaCoordinator.commitNewEntry}
+            onCommitMediaEdit={mediaCoordinator.commitEdit}
+            onRemoveMedia={mediaCoordinator.removeCommittedAttachment}
+            onDeleteEntryWithMedia={mediaCoordinator.deleteEntry}
           />
         ) : null}
       </Screen>
