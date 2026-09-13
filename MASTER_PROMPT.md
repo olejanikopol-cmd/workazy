@@ -105,11 +105,13 @@ Keep:
 - Current balance
 - Daily limit
 - Expenses
-- Salary schedule
+- Expected income schedules (including SalarySchedule)
+- One-time expected income
+- Explicitly recorded actual income
 - Debts / obligations
 - Due dates and reminders
 
-The daily limit must remain a fixed calculated allowance; expenses should be shown separately and must not silently rewrite the configured/derived daily limit.
+The daily allowance is saved for each local date in AUTO or MANUAL mode. Expenses are shown separately and tracked against the saved allowance; they never automatically rewrite that day's allowance. Only an explicit confirmed action may replace today's allowance. A new local date establishes its own allowance.
 
 ### 6. Notifications
 

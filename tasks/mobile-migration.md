@@ -92,16 +92,21 @@ Acceptance:
 
 ### Slice 6 — Finance
 Implement:
-- balance
-- daily limit
-- salary schedules
-- expenses
-- obligations
-- reminders
+- one Finance tab with Overview / Operations / Obligations
+- current balance and primary currency
+- fixed daily allowance in AUTO or MANUAL mode
+- SalarySchedule-compatible recurring expected income
+- one-time expected income
+- actual expense/income CRUD
+- payment/debt/receivable/purchase obligations
+- native local reminders
 
 Acceptance:
-- expense does not rewrite daily limit incorrectly
-- obligation notification scheduling works
+- versioned local persistence
+- legacy conversion preserves data or blocks explicitly without data loss
+- operations never automatically rewrite the saved daily allowance
+- obligation reminders schedule, reschedule, cancel and reconcile locally
+- reminder reconciliation is isolated from Calendar ownership and respects shared OS capacity
 
 ### Slice 7 — Polish
 - onboarding

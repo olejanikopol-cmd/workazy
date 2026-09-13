@@ -1,259 +1,289 @@
-# Slice 5 — Native Journal audio/video, local files and playback
+# Slice 6 — Finance: product and architecture brief
 
-Implementation brief, prepared 2026-09-11. Implement **Slice 5 only** and stop before Slice 6. This brief overrides the broader harness instruction to continue the migration. Preparation changes only this file; it does not implement media or update product status.
+Prepared 2026-09-12. **Architecture only; Finance is NOT implemented by this task.** This brief replaces the completed Slice 5 implementation brief. Slice 5 review ended REVIEW_OK; native acceptance remains pending. The reviewed mobile baseline has 362 tests (223 Slices 1–4 + 139 media). Those are prior verification results, not new Finance results.
 
-## Decision and inspected baseline
+The user authorizes a broader, bounded Finance product and this document only. Do not change MASTER_PROMPT.md, tasks/mobile-migration.md, mobile production code or existing web/backend contracts during preparation. A later implementation task executes this brief, implements Slice 6 only and stops before Slice 7.
 
-Deliver real native recording, preview, re-recording, multiple attachments, durable local media and playback inside Journal. **Choose the bounded local-media branch. No cloud upload, sync, remote playback or transcription execution in this slice.** This is a functioning offline media implementation, not upload placeholders.
+## 1. Existing implementation audit and compatibility boundary
 
-Current baseline is commit `1fc38ae` (`mobile: complete slice 4 journal and ideas`), following `7bca37e` for Slices 1–3. Working tree was clean before this brief. Preparation reran the mobile suite: 223 tests passed. Migration status reports 223 tests in default/UTC/Kyiv/Los Angeles, typecheck, app lint with zero problems, full ESLint with three pre-existing Calendar test warnings, dependency/doctor/export/build checks. Those reported checks are baseline evidence, not Slice 5 results. Native acceptance for all prior slices remains pending.
-
-Inspect and preserve the final Slice 4 fixes: per-field `changed` flags; unchanged legacy text/optional values/tags/media; strict parser before every write; persist-before-commit and synchronous store gate; deep-frozen rows AND snapshot wrappers; synchronous parent `commitSheet`; keyed close/reveal and delayed-confirmation identity/revision/busy checks; Records dates 0001–9999 with nullable unsupported conversions. No independent Slice 4 redesign.
-
-Read `MASTER_PROMPT.md`, `HARNESS.md`, `AGENTS.mobile.md`, `MOBILE_ARCHITECTURE.md`, `DESIGN_SYSTEM.md`, `tasks/mobile-migration.md`, mobile README/status, this brief and relevant `/references`. Record implementation decisions and then actual results in mobile status. Save initial status and protected-file hashes before editing.
-
-## Repository findings and backend boundary
-
-These are source findings, not evidence that a deployed service or credentials were tested:
-
-| Source | Existing contract / consequence |
-| --- | --- |
-| `lib/types.ts`, native `src/types/journal.ts`, `src/storage/journalStorage.ts` | JournalEntry has optional `media: JournalMedia[]`; multiple attachments supported. Metadata has ID/parent/type/MIME/name/size/duration/dimensions/transcript/status/timestamps, no binary or playback URI. Native parser rejects unknown media keys and duplicate media IDs across entries. Keep it strict. |
-| `app/journal-media.tsx`, `lib/media-recorder.ts` | Browser MediaRecorder, Blob/object-URL drafts, players and transcript controls are conceptual references only. Do not import their runtime or copy the misleading waiting-for-cloud UI. |
-| `lib/media-limits.ts` | Audio: 900,000 ms and 25,165,824 bytes (15 minutes / 24 MiB). Video: 600,000 ms and 83,886,080 bytes (10 minutes / 80 MiB). Existing targets: video 900,000 bit/s, audio 96,000 bit/s. These are per-file limits, not decimal MB or aggregate entry limits. |
-| `lib/api.ts`, `lib/planner-api.ts` | Server requires `Authorization: Bearer <WORKAZY_API_TOKEN>` or an infrastructure-authenticated owner header. Mobile has no API base URL/credential acquisition/storage contract or trusted owner identity. Never fabricate `oai-authenticated-user-email`, embed the server token in a bundle/EXPO_PUBLIC variable, or read/copy secrets into mobile. |
-| `app/api/v1/journal/route.ts`, `[id]/route.ts`, `state/route.ts` | Server Journal body cap is 5,000 characters; local bodies intentionally exceed 100k. Native IDs are not evidence that corresponding D1 entries exist. Do not truncate local text or create hidden partial server entries just to enable media. |
-| `lib/journal-media.ts`, `lib/r2.ts`, `db/schema.ts`, `.openai/hosting.json` | D1 `DB` stores metadata; private R2 `MEDIA` stores streams under `journal-media/`. Entry must exist before upload. No direct mobile R2 credentials. |
-| `lib/journal-media-upload.ts`, `lib/media-upload.ts`, media upload routes | Chunk sessions, exact part sizes, MIME signature checking, stream assembly, retry/abort and idempotent completion exist. Reuse this protocol in a later authenticated integration; no parallel backend needed. |
-| `lib/media-sign.ts`, media `file-url` / `file` routes | Authenticated URL request returns a relative signed playback URL with five-minute TTL. File route supports Range and bearer/signature authentication; missing objects return 410. URLs are temporary, never durable JournalMedia fields. |
-| `lib/transcription/provider.ts`, `groq.ts`, `lib/journal-media.ts` | Groq Whisper (`whisper-large-v3-turbo`), server-only `GROQ_API_KEY`, 60-second provider timeout. Video transcription requires a separate audio track; backend refuses to send the full video. No bounded native extraction/auth contract exists. Defer execution, transcript editing, retry and extraction. Preserve/display existing transcripts read-only. |
-
-### Upload protocol reserved for later work — do not implement it now
-
-All JSON routes use `{ ok: true, data }` / `{ ok: false, error }` envelopes. The compatible future flow is:
-
-1. Establish authorized native API configuration, safe credentials and local/server entry identity/conflict policy, resolving the 5,000-character mismatch first. Validate file size/duration/MIME locally; stream/chunk file data, never base64 or load a whole video into JS.
-2. `POST /api/v1/journal/media/uploads` with `{ journalEntryId, type, file: { sizeBytes, mimeType, fileName }, durationMs?, width?, height?, audioTrack? }`. Returns `{ id, chunkSizeBytes, main: { partCount, sizeBytes }, track: ... | null }`; current chunk size is 512 KiB. IDs are server-assigned media IDs.
-3. `PUT /api/v1/journal/media/uploads/:id/parts/:kind/:part`, zero-based `part`, kind `main`/`track`, exact binary part bytes (`application/octet-stream`). `GET /uploads/:id` returns uploaded main/track part numbers. Server validates lengths and the first part's container signature. Existing web retry policy is three attempts for network/408/429/5xx; a future native adapter needs explicit abortable request deadlines, not unbounded waits.
-4. `POST /uploads/:id/complete` assembles bounded R2 streams, inserts D1 metadata and returns JournalMedia; repeated completion returns the existing row. On an ambiguous timeout, check/retry the same session/completion before creating duplicates. Merge returned metadata by the correct entry/media identity under the local store gate, never overwrite text with a stale server snapshot.
-5. `DELETE /uploads/:id` aborts temporary manifest/chunks (missing manifest is idempotent). Manifests expire after 24 hours, with cleanup on access; this is not a proven scheduled garbage collector. Completion failure retains chunks for retry and attempts final-object cleanup; cleanup failures are possible. Preserve the local file on any upload/auth/network failure.
-6. Legacy `POST /api/v1/journal/media` multipart also exists (`journalEntryId`, `type`, `file`, optional `audioTrack`/duration/dimensions). Prefer chunking for later mobile because it avoids large proxy requests. `GET /journal/:id/media` and `GET /journal/media/:id` return metadata.
-7. Remote `DELETE /journal/media/:id` deletes R2 objects before D1 metadata; entry deletion also removes media. Never claim local deletion invokes this. `PATCH /journal/media/:id` edits transcript (20,000-character input cap); `POST /:id/transcribe` invokes the server provider and may return metadata with error status while preserving the file.
-
-No HTTP adapter, upload queue, auth screen, fake percentages, cloud-connected badge or inert upload/transcribe button in Slice 5. Define a narrow repository boundary that can later resolve a remote media item; implement only local resolution now. Existing remote metadata without a local file remains visible and honestly unavailable for playback.
-
-## Packages and native configuration
-
-Use SDK-compatible packages, not `expo-av` or browser fallbacks. The installed `mobile/node_modules/expo/bundledNativeModules.json` for Expo `~57.0.22` specifies:
-
-| Package | Compatible range | Purpose |
+| Evidence | Existing behavior | Native decision |
 | --- | --- | --- |
-| `expo-audio` | `~57.0.5` | Native microphone recording and audio playback |
-| `expo-camera` | `~57.0.5` | CameraView and native video recording |
-| `expo-video` | `~57.0.4` | Video preview/playback and loaded duration metadata |
-| `expo-file-system` | `~57.0.7` | App-owned files, stat/copy/move/delete/list; already transitive, make direct |
+| `lib/types.ts:98–135` | SalarySchedule: id, dayOfMonth, amount, title, createdAt, updatedAt. FinanceExpense: id, date, amount, optional note, createdAt. FinanceObligation: debt/purchase, title, amount, optional dueDate/reminderTime, completed, timestamps. FinanceState: balance, salarySchedules, expenses, obligations, optional updatedAt. Amounts are major-unit numbers; no currency setting or income transactions. | Preserve named concepts and identifiers in explicit native equivalents; add income and optional metadata without reinterpreting debt as receivable. Do not change root types. |
+| `app/finance-screen.tsx` | Budget/obligations sections; hardcoded UAH; balance adjustment, expense add/delete, monthly salary add/delete, obligation add/toggle/delete and month grid. No expense editing or actual income receipt. Salary calendar rows are expectations, not deposits. Completing an obligation does not change balance. | One Finance tab with Overview / Operations / Obligations; actual income separate from expected income; retain status-only completion semantics. |
+| `app/finance-screen.tsx` + `lib/finance.ts` | Expense subtracts from balance, clamps at zero; deletion refunds the whole amount. `dailyBudget(balance,nextDate,today)` is recomputed from that changed balance. This violates the fixed-allowance product rule and can inflate balance after deleting a previously clamped expense. | Do not copy these defects. Signed balance, exact integer arithmetic, explicit operation deltas, separately persisted daily allowance. |
+| `lib/finance.ts` | Next salary strictly after today, current/next month, monthly day clamps to month end; zero salary amounts allowed. `daysUntil` rounds elapsed milliseconds; constructors have JS years 0–99 pitfalls. Normalizer drops malformed rows and substitutes empty/zero values. | Reuse monthly concept and clamp policy, not these runtime helpers. Strict native dates/parser; no destructive normalization. Handle expected income today explicitly. |
+| `lib/planner-storage.ts` | Web localStorage `personal-planner-v1` contains optional finances inside the planner snapshot. | Not a native key and not accessible automatically from native. No browser storage dependency. |
+| `lib/planner-api.ts` | Finance travels through whole-state sync; preferredFinanceState selects an entire local/server finance snapshot using content and updatedAt, not transaction merge. | Do not reuse that merge for the new native model; no cloud sync in Slice 6. |
+| `app/api/v1/state/route.ts:184–235,248–281` | GET reads D1 settings key `planner-finance-state`. PUT parses known finance fields and upserts JSON; omitted finances leaves it unchanged. Enum only debt/purchase; nonnegative balance; title/note limits; additional native fields are not preserved by this parser. | A V1 native envelope is NOT round-trip compatible with this API. Never send it to the old endpoint or strip fields to make it fit. Future sync requires version negotiation and explicit migration. |
+| `lib/reminder-scheduler.ts` and reminder routes/Telegram delivery | Existing obligation reminder uses due date, reminder time or default 09:00; skips completed. Web delivery text assumes UAH and debt/purchase. Existing tests include Kyiv wall-clock conversion and server-state access. | Reuse due-date meaning and 09:00 default only. Native device-zone local scheduling; no server reminder routes or Telegram import. |
+| `tests/finance.test.mjs` | Five tests cover helper budget division, month-end salary clamp, permissive normalization and source wiring. They do not protect fixed allowance through expense CRUD. | Keep root tests unchanged; new native production-path tests must prove that invariant. |
+| `mobile/src/features/finance/FinanceScreen.tsx` | Shell only. No native Finance domain/store/storage version exists. | First native Finance schema is V1; do not invent a prior installed native Finance migration. |
+| Native Calendar notification modules and lifecycle | Root-mounted lifecycle; permission/read/retry flow; latest-revision reconciliation; persisted registry; native pending-list verification; deterministic Calendar namespace; total pending policy 48 including unrelated requests; DST gap/fold handling. | Reuse contracts/policies via narrow extraction and a shared OS queue, not two racing standalone schedulers. Preserve Calendar IDs, storage and user-visible reminder semantics. |
 
-Run from `mobile/`: `npx expo install expo-audio expo-camera expo-video expo-file-system`. Change only mobile package/lockfile; do not upgrade Expo/RN or add media-library, image-picker, FFmpeg, network/auth or state-management dependencies. Confirm the installed typings/plugin options before coding; no invented API names or web shims.
+Also inspected MASTER_PROMPT.md, AGENTS.mobile.md, MOBILE_ARCHITECTURE.md, DESIGN_SYSTEM.md, tasks/mobile-migration.md and mobile/MIGRATION_STATUS.md. Architecture examples in older documents are illustrative: current native local storage and notification implementations are the concrete baseline. Finance requires no backend credentials or external service.
 
-Append these entries to existing `expo.plugins` in `mobile/app.json`, retaining every current plugin:
+## 2. Product decisions and explicit exclusions
 
-```json
-[
-  ["expo-audio", {
-    "microphonePermission": "Workazy использует микрофон для аудио- и видеозаписей дневника.",
-    "recordAudioAndroid": true,
-    "enableBackgroundPlayback": false,
-    "enableBackgroundRecording": false
-  }],
-  ["expo-camera", {
-    "cameraPermission": "Workazy использует камеру для видеозаписей дневника.",
-    "microphonePermission": "Workazy использует микрофон для аудио- и видеозаписей дневника.",
-    "recordAudioAndroid": true,
-    "barcodeScannerEnabled": false
-  }],
-  ["expo-video", {
-    "supportsBackgroundPlayback": false,
-    "supportsPictureInPicture": false
-  }]
-]
-```
+Finance answers four questions: **what is available, today's fixed limit, today's expenses, and what comes next?** It is a personal planner with money tracking, not a bank or accounting package.
 
-Both microphone strings must match. Keep `orientation: "portrait"`, four tabs, startup route and notification settings unchanged. No Photos/gallery permission, file sharing, opening Documents in place, background modes/services, remote push or additional notification prompts. `expo-file-system` needs no added plugin for private sandbox files; keep iOS file sharing disabled. Audit generated/resolved permissions (including transitive Android storage permissions); do not request external-storage permission for private files. Do not run a destructive prebuild or commit generated native projects. Config-plugin changes need a new native binary for acceptance.
+- One primary currency for the complete Finance dataset: UAH, USD, EUR or PLN, all two decimal places. First Finance setup asks currency (UAH suggested), current balance and limit mode. Setup stays inside Finance; no Settings tab/Slice 7 expansion.
+- Available means the user's tracked current balance, including recorded receipts/expenses and explicit balance corrections. It excludes expected income, receivables and planned obligations. Label “Доступно” with help “По вашим записям; будущие платежи не вычтены”. No claim that this is a bank balance or financial recommendation.
+- Expenses may make balance negative. Show the deficit honestly; never clamp or discard it. Expected income never increases available money automatically.
+- Daily limit mode is AUTO or MANUAL; today's saved allowance is independent of subsequent transaction changes. Exact policy below.
+- Keep `SalarySchedule` internally as monthly expected income, present “Доходы”, “Регулярный доход” and user-supplied titles. Salary, advance, freelance, scholarship/benefit, side income and other are optional labels, not separate accounting systems. Add one-time expectations and actual income entries.
+- Optional expense category: food, transport, home, health, entertainment, shopping, other. Absence is distinct from “other”. No mandatory category or category setup screen. Income has an optional source label instead.
+- Obligations: payment, debt I owe, money owed to me, planned purchase. Totals by direction/type; never subtract receivables from what the user owes to present a misleading net number.
+- No bank/Monobank integration, card/account sync, multiple wallets, FX, investments, taxes, accounting ledger, budgets by category, shared/family accounts, complex reports, upload, cloud Finance sync, Telegram, push backend, subscription billing engine, debt interest, partial repayments, recurring obligation generation or import/export UI in Slice 6.
+- Monthly expected-income repetition plus one-time expectations is sufficient for v1. Weekly/biweekly rules are deferred; users may enter one-time dates. No automatic posting, automatic payment or income reminder in this slice.
 
-Verified SDK 57 references: [Audio](https://docs.expo.dev/versions/v57.0.0/sdk/audio/), [Camera](https://docs.expo.dev/versions/v57.0.0/sdk/camera/), [Video](https://docs.expo.dev/versions/v57.0.0/sdk/video/). File API/plugin evidence is available in installed `expo-file-system/src` and `plugin/src/withFileSystem.ts`.
+## 3. Exact native domain model
 
-Use audio `prepareToRecordAsync`, `record({ forDuration: 900 })`, awaited `stop`, recorder status and native URI; use `useAudioPlayer` for playback. Start from the AAC/M4A high-quality preset, override audio bitrate to 96,000 and use mono for voice. Configure recording mode only for the active owner, then restore playback mode (`allowsRecording: false`); background recording/playback remains disabled. The default output is cache, so it must be adopted into owned storage before becoming durable. [Audio API](https://docs.expo.dev/versions/v57.0.0/sdk/audio/)
-
-Use CameraView in video mode, facing front initially, 720p target and 900,000 video bit/s. Pass `maxDuration: 600`, `maxFileSize: 83886080`; specify a supported iOS codec (prefer H.264) when setting bitrate. `recordAsync` resolves when recording ends, not when it starts: retain that promise and handle `stopRecording` separately. The result can be undefined. Camera flip stops recording, so enable flip only in idle/ready; disabled while starting/recording/stopping, available again after re-record. No seamless in-take camera-switch claim. [Camera API](https://docs.expo.dev/versions/v57.0.0/sdk/camera/)
-
-Use `useVideoPlayer`/`VideoView` for local preview with native controls, background/PiP disabled; release players when leaving. [Video API](https://docs.expo.dev/versions/v57.0.0/sdk/video/)
-
-## Native UX and recorder state machine
-
-JournalSheet gets real «Аудио» / «Видео» actions in add/edit mode; reader has playback and an Edit entry action for adding more. Preserve the existing text draft when entering/exiting recording. Dedicated full-screen video surface: black camera canvas, safe areas, front camera, large record/stop control, timer, Close and Flip; no press-and-hold. Audio has equally explicit start/stop, timer, cancel, preview and re-record.
-
-Host dedicated recorder/preview components within the existing full-screen JournalSheet modal, keeping its editor state mounted/owned above them. This is an intentional bounded alternative to adding a Router recorder route: avoid stacked competing native modals, route-parameter callbacks/URIs and changing root navigation. The recorder is full screen, not a small camera embedded among text inputs.
-
-Implement one production-used controller per recording session, with injected native recorder, permission, clock and file ports. Suggested explicit states:
-
-`idle -> requesting-permission -> preparing -> ready -> starting -> recording -> stopping -> validating-file -> preview -> adopting -> attached`
-
-Also `denied`, `error`, `cancelling`, `cancelled`. Audio's initiating record tap may continue through granted permission/preparation into recording for the same active session; video action opens the permission/ready camera, then one record tap starts. The same record control's next tap stops. No hold gestures, double-tap requirements, hidden automatic recording on Journal focus, or fake JS-only recording state.
-
-- Acquire a synchronous transition gate before permission/prepare/start/stop awaits. One active native capture/audio-session owner globally; no simultaneous audio recorder and video microphone. Duplicate start/stop and timer/native auto-stop races settle at most once.
-- Do not hold a transition mutex waiting for the entire video recording promise: the stop control must remain operable. Track operation generation separately from short start/stop gates.
-- Timer uses native elapsed status where available and a monotonic clock fallback for display, never wall-clock timestamps as elapsed duration or a counter of interval ticks. Native auto-stop plus a controller deadline enforces the duration limit. Final recorded duration comes from native status/loaded media, not just the UI timer; unknown/nonfinite/zero metadata is an error, not fabricated success.
-- Read actual file size after finalization and again before promotion. Reject zero bytes, nonfinite sizes, unsupported MIME, duration or size above the exact limits. Camera native file-size limit is a guard, not proof; audio polling may stop early if file size is available. No claimed hard audio byte cutoff if native API lacks it: final stat is authoritative. Never truncate, rename to a false MIME or silently save an oversized file. Show a useful error and re-record/cancel actions.
-- Match actual container/extension (AAC M4A `audio/mp4`; native video may be MP4 or MOV `video/quicktime`). Inspect a bounded header where needed, not whole-file JS reads. Preserve actual dimensions if available; don't invent them. No transcoding/extraction or second video audio-track recorder.
-- Preview is explicit; Use audio/video adds the validated file to the current editor draft, not immediately to cloud. Re-record discards only this uncommitted take after confirmation, releases its player, cleans it and returns to ready (video flip available). It does not replace/delete a previously committed attachment.
-- Cancel is available during permission, preparing, recording and preview. Invalidate session synchronously, stop/finalize if needed, release camera/microphone/player, clean only owned uncommitted files and return to the same draft. If a URI arrives after cancellation, clean that old session's file rather than attaching it. Catch all late promise rejections.
-- Initialize lifecycle state from `AppState.currentState`. Never start capture while inactive/background. Permission-dialog inactivity must not trigger a start in the background. On genuine capture interruption/background/lock, stop once and retain a valid partial take for explicit preview on return; otherwise show interrupted/error. Never auto-resume recording. Stop playback on background and release hardware on unmount. No guarantee that an in-progress recording survives process death.
-
-## Permission policy
-
-No camera/microphone requests on app launch, Journal mount, History, playback or tab focus. Request only after the user's Audio/Video action (or explicit retry). Audio needs microphone only; video needs both camera and microphone, sequentially with session checks after each await. Do not start silent video when microphone is denied.
-
-Handle unknown/loading, granted, denied-but-requestable, denied/restricted/non-requestable, unavailable camera and native exceptions. Re-request only on explicit retry while `canAskAgain`; otherwise provide Russian explanation, «Открыть настройки» via Linking.openSettings and Cancel. On return from Settings, refresh permission state for the current session without prompting or automatically recording. A stale granted result cannot revive a cancelled recorder or overwrite newer error/permission state. No crash or infinite prompt loop.
-
-## Storage, metadata and local file ownership
-
-Keep `workazy-native-journal-v1`, its V1 envelope and the existing JournalMedia shape. Keep Ideas entirely unchanged. No binary/base64/Blob/byte arrays or file/temporary playback URI in journal snapshots. Data-URL-like prose/transcript text must remain valid. No destructive schema migration or relaxed media parser.
-
-New local attachments use collision-checked `local-media-${Crypto.randomUUID()}` IDs. Persist the full compatible JournalMedia metadata, with the actual parent entry ID, MIME/size/duration, canonical UTC timestamps and optional real dimensions/name. Set `transcriptEdited: false`, `transcriptionStatus: "pending"` meaning not transcribed (as in the current web model); omit transcript/provider/error. This must NEVER show a processing spinner, scheduled transcription promise or cloud queue. Render local availability separately; show «На устройстве» and, where relevant, «Расшифровка пока недоступна». Preserve all existing metadata/status/transcripts without reinterpretation or normalization.
-
-### Repository contract and files
-
-Use `src/services/media/` with these bounded responsibilities (equivalent small file splits are fine):
-
-- `mediaLimits.ts`: native-safe constants/MIME mapping mirrored with provenance from `lib/media-limits.ts`.
-- `mediaContracts.ts`: recorder results, draft/prepared attachment DTOs, ownership/session tokens, typed file/permission/capture/playback failures; no Expo imports in the pure contract.
-- `recorderController.ts`: production transition/lifecycle/permission/timer policy; adapters translate native events into this controller.
-- `localMediaRepository.ts`: injected file port; adopt, prepare, resolve, discard and reconcile owned files; cached immutable status if subscribed.
-- `expoMediaFiles.ts`, native recorder/player bindings: only these use Expo modules. Use current `File`, `Directory`, `Paths` APIs. No deprecated-method workaround via web APIs.
-- `journalMediaCoordinator.ts`: actual save/delete orchestration, leases, synchronous operation gate, latest journal references and cleanup ordering.
-- `src/storage/localMediaManifest.ts`: strict V1 filesystem manifest parser/serializer. It is an ownership record, not another journal store.
-- `src/features/journal/media/`: audio/video recorder surfaces, preview and attachment cards/players. Wire the real controller/repository; don't leave tested helpers unused.
-
-Conceptual repository operations:
+Use `mobile/src/types/finance.ts`; no imports from root web runtime. The following is the persisted native contract, not the old API DTO. Optional means absent, not null, unless null is explicitly shown. All collections are immutable after publication.
 
 ```ts
-adoptCapture(result, owner): Promise<LocalMediaDraft>
-prepare(draft, owner): Promise<PreparedLocalMedia>
-resolve(media): Promise<LocalPlaybackSource | MissingOrUnavailable>
-discard(draft, owner): Promise<CleanupResult>
-reconcile(committedReferences, activeLeases): Promise<CleanupResult>
+type CurrencyCode = 'UAH' | 'USD' | 'EUR' | 'PLN';
+type IncomeSource = 'salary' | 'advance' | 'freelance' | 'benefit' | 'side' | 'other';
+type ExpenseCategory = 'food' | 'transport' | 'home' | 'health' | 'entertainment' | 'shopping' | 'other';
+type LocalDate = string; // strictly valid Gregorian YYYY-MM-DD, 0001–9999
+type Instant = string;   // canonical UTC ISO timestamp using existing native policy
+type Minor = number;     // safe integer minor units; no binary floating point money math
+
+type SalarySchedule = {
+  id: string; title: string; dayOfMonth: number; amountMinor: Minor;
+  source?: IncomeSource; active: boolean;
+  createdAt: Instant; updatedAt: Instant;
+};
+type PlannedIncome = {
+  id: string; title: string; date: LocalDate; amountMinor: Minor;
+  source?: IncomeSource; createdAt: Instant; updatedAt: Instant;
+};
+type IncomeExpectationRef =
+  | { kind: 'monthly'; scheduleId: string; date: LocalDate }
+  | { kind: 'once'; plannedIncomeId: string; date: LocalDate };
+type IncomeResolution = {
+  ref: IncomeExpectationRef; state: 'received' | 'skipped';
+  incomeId?: string; // present iff received; points to one existing FinanceIncome
+};
+type FinanceExpense = {
+  id: string; date: LocalDate; amountMinor: Minor; note?: string;
+  category?: ExpenseCategory; createdAt: Instant; updatedAt?: Instant;
+  balancePolicy: 'applied' | 'legacy-history';
+};
+type FinanceIncome = {
+  id: string; date: LocalDate; amountMinor: Minor; note?: string;
+  source?: IncomeSource; createdAt: Instant; updatedAt: Instant;
+  expectation?: IncomeExpectationRef;
+};
+type FinanceObligation = {
+  id: string; kind: 'debt' | 'purchase' | 'payment' | 'receivable';
+  title: string; amountMinor: Minor; dueDate?: LocalDate;
+  reminderTime?: string; // HH:mm; absence = reminders off; requires dueDate
+  completed: boolean; createdAt: Instant; updatedAt: Instant;
+};
+type DailyAllowance = {
+  date: LocalDate; revision: number; mode: 'auto' | 'manual'; amountMinor: Minor;
+  capturedAt: Instant; baseBalanceMinor: Minor;
+  horizonDate?: LocalDate; dayCount?: number; // required only in auto mode
+  reason: 'day-open' | 'explicit-change';
+};
+type FinanceState = {
+  currency: CurrencyCode;
+  balanceMinor: Minor; balanceUpdatedAt: Instant;
+  limit: { mode: 'auto' | 'manual'; manualMinor: Minor; fallbackEndDate?: LocalDate };
+  salarySchedules: SalarySchedule[]; plannedIncomes: PlannedIncome[];
+  expenses: FinanceExpense[]; incomes: FinanceIncome[];
+  incomeResolutions: IncomeResolution[];
+  obligations: FinanceObligation[]; allowances: DailyAllowance[];
+  updatedAt: Instant;
+};
+type FinanceEnvelopeV1 = {
+  version: 1; initialized: boolean; state: FinanceState; savedAt: Instant;
+};
 ```
 
-`LocalMediaDraft` is in-memory file reference + metadata, keyed to sheet/session/generation. `PreparedLocalMedia` supplies metadata only to the journal store; the filesystem locator stays in the repository. Playback source URIs are ephemeral runtime values. No HTTP implementation now; a future repository can return a remote source without changing JournalMedia or journal persistence.
+Empty initialized=false state has UAH, zero balance/manualMinor, auto mode and empty arrays; first setup commits initialized=true atomically. Empty defaults are created only for an absent key, not corrupt bytes. Fresh IDs use the existing native UUID facility. Require uniqueness within each entity collection (matching the legacy contract), not across different legacy collections. Legacy IDs are retained; reference keys and mixed-list React keys include entity type plus ID, so a salary and expense sharing an old ID cannot collide. Resolution uniqueness is by monthly scheduleId+date or once plannedIncomeId; one-time date changes update the reference only while unresolved. IDs are stable through edits.
 
-Use a dedicated sandbox namespace:
+Constraints: safe integers, absolute money and every checked aggregate <= Number.MAX_SAFE_INTEGER; amounts for operations/obligations >0; expected amounts >=0 (legacy zero preserved, but zero expectations do not form AUTO horizon); manual limit >=0. Reject overflow before writes. Parse input decimal strings (comma or dot decimal, max two fractional digits, no exponent/Infinity); convert with integer arithmetic. Reject extra decimals rather than round new entries. Never perform arithmetic on formatted strings. Selected currencies have minor scale 100; no floating-point exchange conversion.
 
-- Staging: `Paths.cache/workazy-journal-media/v1/staging/<session-id>/…`.
-- Durable: `Paths.document/workazy-journal-media/v1/objects/<local-media-id>/manifest.json` and `recording.<actual-extension>`.
-- Manifest V1: `{ version: 1, mediaId, fileName, mimeType, sizeBytes, durationMs, createdAt }`, only strict validated scalars. `fileName` is the single generated relative basename, never arbitrary path input; derive absolute locations from the current sandbox root. No stored absolute container path, which can change between installations/restores. Reject traversal, separators in IDs/basenames, malformed manifests and unexpected file types. No recursively deleting arbitrary URIs or files based only on an ID prefix.
+Titles required for expectations/obligations. New/changed titles <=200 characters; notes <=2,000. Hydration/migration must preserve valid legacy longer text; use per-field changed flags, do not apply form caps to untouched legacy values. Preserve whitespace/optional presence in stored imported text; trim only newly edited values. Date/time and unknown enum/key failures are explicit; do not silently map an unknown kind to debt/other.
 
-Create a unique destination without overwrite. Native output starts in the app sandbox; adopt the returned file into the owned staging namespace, retaining a lease until its lifecycle ends. Prepare makes a verified complete durable copy/move plus valid ownership manifest before metadata can reference it. Use temporary names and final moves where supported; never claim cross-filesystem or AsyncStorage/filesystem atomicity. Do not remove the only valid source before the destination is complete. Handle disk full/read-only/missing source/stat/copy/move/manifest errors visibly, preserving retryable drafts where possible.
+Currency belongs to Finance state, not every row. It may change only before data exists (zero balance, all entity/resolution/allowance arrays empty). After first saved data it is locked; explain that changing symbols would relabel history, not convert money. No reset/delete-all escape hatch in this slice. Future currency migration requires a separate decision.
 
-A valid manifest and contained generated path establish ownership. Unknown/unowned/remote metadata never authorizes file deletion. Stored references are authoritative for retention; a prefix alone never means a file is orphaned. A missing/invalid manifest or missing file yields unavailable/error with retry and metadata retained, not a fabricated playable item or automatic metadata deletion.
+## 4. Balance and operation semantics
 
-## Journal transaction and editor integration
+The stored balance is authoritative, not recomputed by summing incomplete historical data. Record each effect in the same Finance write as its operation. This is deliberately not an accounting ledger.
 
-Extend Journal model/store narrowly for metadata mutations. Preserve old text-only APIs/tests. Add an atomic `addWithMedia(input, date, preparedMetadata)` and `editWithMedia(id, input, { add, removeIds })` path, plus attachment-only removal if needed for reader actions. New metadata DTOs omit `journalEntryId`; the store supplies the newly generated or existing entry ID. No file ports in the pure journal store.
-
-- New entry Save commits text and all selected prepared media in ONE journal envelope. Permit a media-only new entry when it contains at least one real prepared attachment; text-only blank submissions remain invalid. Generate/check entry ID once per accepted attempt after input gates. No placeholder persisted entry to begin recording, no fake text to satisfy validation.
-- Existing entry edit merges attachment additions/removals into the latest committed row under the existing synchronous store gate. Do not replace `media[]` from a stale editor snapshot. Reject duplicate media IDs globally and wrong/missing targets; preserve unrelated media, all untouched text fields, createdAt, captured date and order. Multiple attachments remain possible; no invented single-attachment cap. Update updatedAt only for actual mutations.
-- Draft removals/additions are part of dirty detection and draft revision. In edit mode, removal is confirmed and staged until Save; Cancel restores committed metadata/files. In reader mode, confirmed attachment deletion may commit immediately and leave the reader open. Removing the last attachment may leave an empty legacy-compatible entry; never silently delete the parent or invent body text. New/changed text-only body validation otherwise remains intact.
-- A coordinator operation owns file leases and the editor busy lock from preparation through journal persistence. Before each awaited result changes a draft, before calling the store, and before closing/revealing, check `{ sheetKey, entryId or new-draft key, draftRevision, recorderSessionId, generation }` against the synchronous current owner. Store still has its own gate. Recheck current state after file preparation; never replay a saved stale row.
-- Record/preview sessions hold a parent dismissal/save/delete gate while their surface is active, with their own explicit cancel path. Do not make stop/cancel require re-acquiring a lock held for the entire session. Media Use increments the same draft revision synchronously, transfers its lease to that draft and returns to editing. Text is never reconstructed from previews or overwritten on recorder return.
-- Existing delayed discard/delete confirmations must recheck current identity, full draft revision (media included) and busy state. Old recorder/permission/file/player completions cannot attach to, clear, close or redirect a newer editor. If metadata persistence was already in flight when a sheet was superseded, let its original entry commit settle, suppress stale UI effects and retain any file that became referenced; never delete it merely because its old UI owner disappeared.
-
-### Required commit/cleanup order
-
-| Event | Required ordering and failure result |
+| Action | Atomic balance effect |
 | --- | --- |
-| Use take in editor | Validate/adopt under its session, append staged draft reference only to current owner; no journal write yet. |
-| Save with additions | Hold leases -> prepare/verify all final files/manifests -> recheck owner/latest state -> serialize/parse exact next journal bytes -> await AsyncStorage -> publish -> release committed leases. Only then report saved. |
-| Metadata save fails | Previous journal bytes/state and committed files unchanged; full text/media draft and prepared file retained for retry. Retry reuses the same take IDs/prepared files without duplicates. Do not release into cleanup while the draft still needs them. |
-| Cancel or re-record uncommitted take | Stop and await capture settlement -> stop/release preview -> invalidate/retire lease -> delete only that take's owned staging/prepared files after checking no committed reference; errors are reported/retryable. Late output follows the same cleanup path. |
-| Save removing media / reader attachment delete | Confirm correct target -> persist metadata removal first -> only on success stop/release its playback and remove owned file/manifest. Failed persistence leaves the playable committed attachment intact. |
-| Delete whole journal entry | Capture its current media IDs -> durable store.remove -> cleanup only now-unreferenced locally owned media; remote files untouched. Failed entry deletion deletes no files. |
-| Cleanup fails after successful metadata removal | Keep removal committed, show a cleanup warning and retry; do not report the metadata save as failed, restore a ghost row or lose track of cleanup work. Ownership directories left on disk are discoverable for retry. |
+| Add new expense | subtract full amount, even if it becomes negative |
+| Add actual income | add amount; expected income alone has no effect |
+| Edit applied expense | add old amount, subtract new amount |
+| Delete applied expense | add its amount back |
+| Edit actual income | subtract old amount, add new amount |
+| Delete actual income | subtract its amount; signed result allowed |
+| Date/note/category/source-only edit | zero balance effect |
+| Legacy-history expense edit/delete | zero balance effect; historical record only |
+| Set current balance | explicit replacement, never represented as income or expense |
+| Add/edit/complete/reopen/delete obligation or expectation | zero balance effect |
 
-Serialize prepare/commit/cleanup through the production coordinator; active leases prevent startup/foreground cleanup from racing draft promotion or playback. Every delete decision uses current successfully hydrated committed references, not a captured stale list across awaits. Maintain protection until the file operation completes. No eager GC during journal loading/load-error or an active conflicting transaction.
+Operations are actual events: date <= current local today at acceptance. Reject future actual entries; offer expected income or obligation instead. Backdated actual additions affect current balance immediately, and their own date's expense total; explain this before saving a historical addition. Do not rebuild past allowance snapshots. Editing/deleting old applied operations also adjusts today's tracked balance by the displayed delta; confirmation shows it. Changing expense into income is not an edit: cancel/delete then create with explicit effects.
 
-### Restart and cleanup guarantees
+Balance correction shows old/new/delta and commits atomically; it is excluded from spent/income statistics. Later edits of applied operations still use the delta table, not a recomputation from zero. No silent refund from a legacy expense whose original balance impact is unknowable.
 
-After a successful save, a new store + new repository must load the metadata and resolve the durable file offline. Unsaved text/media drafts and in-progress recordings need not survive process termination; say so clearly. Owned unreferenced staging/prepared files may be cleaned after restart; committed document files must not be treated as cache.
+## 5. Fixed daily-limit semantics
 
-Reconcile only after journal hydration succeeds and while no conflicting media transaction runs (startup and explicit retry/foreground are sufficient; no background service). Collect references across ALL journal entries, including missing-file metadata, then inspect only this repository's namespace and valid ownership records; skip active leases. If journal bytes or an ownership record are corrupt, retain files and expose the error rather than guessing. Detect abandoned temporary names inside known owned transaction directories without sweeping unrelated cache. An interrupted delete with files left behind is retried by this scan. Crash after promotion but before JSON commit leaves an owned orphan, not missing committed media; crash after JSON commit retains the referenced file. Test both boundaries.
+### Day establishment and horizon
 
-## Playback and visible errors
+Every Finance focus/foreground refresh and every Finance command samples an injected local clock. Before the first domain mutation on a local date D, ensure that date's allowance is established from the PRE-mutation committed state. Establish it in the same transaction when there is a mutation; a read-only day-open writes its own snapshot before showing the limit as saved. Domain money commands require initialized=true; setup is the only mutation accepted before that. Write failure means “Лимит не сохранён — повторить”, not a fake fixed value. Once saved, expenses, income, balance changes, schedule changes and obligation changes never rewrite it automatically.
 
-Attachment cards show type, duration, size and actual local availability. Audio has play/pause, elapsed/total and restart/seek; video has a native preview/player with accessible controls. Only one clip plays at a time; stop/release before recording, deletion or leaving the surface. Handle loading, failed decode, missing file and retry without mutating journal data. A missing local file or remote-only metadata shows «Файл недоступен на этом устройстве», retains transcript/metadata, and offers a confirmed local attachment removal. Never fetch a guessed URL or claim remote deletion.
+MANUAL: snapshot amount = limit.manualMinor. AUTO: determine earliest unresolved positive expected income date strictly AFTER D, considering active monthly schedules and one-time expectations. Day-of-month 29/30/31 clamps to the real month end. Multiple expectations on the earliest date give one horizon; future expected amounts are NOT added to the numerator. Resolve/skip markers exclude that occurrence. Past expectations remain visible as overdue but do not become an imaginary future deposit. Today's unresolved expected income is shown as “Ожидается сегодня” and does not form a zero-day divisor.
 
-Recorder and attachment failures never clear long text, tags, mood or other attachments. Keep Save/Cancel outside scrolling fields and keyboard-safe; retain bounded multiline body scrolling, the full reader and existing history/search ordering. Use current tokens, safe areas, Russian accessibility labels and at least 44pt touch targets. No new design system, gallery, photos, editing timeline or transcript editor.
+If no later income exists, use explicitly configured fallbackEndDate, which must be >D. Do not silently assume a 30-day month. If no usable horizon exists, show “Укажите дату следующего дохода или ручной лимит”; limit is unavailable (no allowance row yet), while expenses and balance remain usable. Once a usable setting is supplied, create the missing snapshot from that command's post-setting state before any subsequent money operation. An existing snapshot is never replaced through this exception.
 
-## Allowed changes and boundaries
+For AUTO:
 
-Allowed: new media services/components/manifest/tests; minimal Journal model/store/binding/Sheet/row/selectors and Records wiring/guard changes needed for media; mobile package/lockfile/app.json entries listed above; mobile README/status. JournalMedia source comments may describe local ownership but do not add URI/binary/source properties or new transcription enum values. No journal envelope replacement, Ideas changes, new backend/auth configuration or remote writes.
+- N = Gregorian calendar-day difference horizonDate − D, not elapsed milliseconds / 24h.
+- Coverage is [D, horizonDate), i.e. today is included and income day excluded.
+- allowanceMinor = floor(max(0, preMutationBalanceMinor) / N).
+- Persist D, mode, value, base balance, horizon, N and capturedAt. Discard no fractional cents into another day automatically.
 
-Protect existing Plans, Calendar, notification services, Ideas, Records date helpers, shared theme/components, root navigation and root web/API/DB/worker/Telegram files. Do not weaken/delete the 223 baseline tests (130 Slices 1–3 + 93 Slice 4). Add new test files; narrowly add new cases to an existing file only if necessary. Root build/lint exclusions remain intact.
+The allowance is fixed **for that date**, not forever for the whole pay period. Tomorrow derives a new snapshot from then-current balance and remaining calendar days. Explain this in mode help. No carry-over field and no automatic compensation today for overspending yesterday. This is a budgeting aid, not a guarantee of solvency.
 
-Explicit exclusions: Finance, Tasks/Goals, server push, Telegram, WebView, cloud upload/sync/auth, remote playback, transcription execution/edit/retry, audio-track extraction, unrelated backend migrations, photo capture/gallery, export/import, background recording/playback, Slice 6 and broad storage redesign.
+### Today's display and explicit changes
 
-## Required production-path tests
+spent(D) = sum of ALL recorded expenses dated D, including legacy history, without subtracting income. remaining(D) = savedAllowance(D) − spent(D). Never clamp remaining: show “Превышение 120 ₴” for −120. Current available balance and daily remainder are separate values.
 
-Use injected fake native/file/clock/permission ports but invoke the SAME controller, repository, coordinator and journal store used by the UI. Tests of unused reducers or reimplemented callback logic are insufficient; inspect native adapter wiring separately. Include meaningful failure injection/deferred promises:
+Examples (UAH):
 
-1. Permission granted/denied/non-requestable/restricted/error; no startup prompt; late permission after cancel/replacement; Settings return refresh; initial inactive AppState cannot start capture.
-2. One tap start / same control stop for audio and video; duplicate taps; prepare/start rejection; video's long-running record promise does not block stop; undefined result; native auto-stop/deadline/manual-stop races settle once. Flip ready-only; interrupted/background capture stops once, never automatically resumes.
-3. Exact 900,000/600,000 ms and 24/80 MiB boundaries; size/duration checked from finalized files; zero/oversize/unknown duration/wrong MIME reject; no truncation or false ready. Timer monotonic under clock changes.
-4. Cancel during every await; late native URI cleanup; re-record cleans only the abandoned take; old session A cannot attach to B, mutate B's revision or delete B's file. Busy and changed-draft delayed confirmations refused.
-5. Actual repository prepare -> actual JournalStore -> serialized V1 bytes -> brand-new JournalStore/repository -> local playback resolution, for audio, video, multiple attachments and media-only entry. Assert no binary/base64/URI in journal metadata/envelope, while prose/transcripts resembling data URLs survive.
-6. Failed file prepare/stat/copy/move/manifest and failed metadata writes preserve previous committed rows/files and retryable text/takes. Retry uses stable take IDs; no duplicate media/entry rows. Parser rejects collisions, wrong parent, malformed media/invalid manifests without rewriting raw data. Every successful mutation reparses through hydration.
-7. Delete ordering: zero file deletion before durable metadata/entry removal; failed writes retain old files; cleanup failure after success remains visible/retryable; metadata-only foreign items never delete arbitrary paths. Missing files remain readable as unavailable metadata.
-8. Restart/crash between file promotion and JSON commit, after JSON commit, and between metadata removal and file cleanup. GC uses all references, skips active leases, blocks on corrupt/unhydrated journal, retains unknown manifests and cannot race a new commit. Paths remain valid if the absolute sandbox root changes.
-9. Long >100k Unicode/multiline body through attach -> save -> restart -> remove attachment -> restart remains exact. Unchanged optional/legacy over-limit fields, tag arrays and existing transcripts survive; frozen wrappers/rows/tags/media remain protected. Dates preserve years 0001/0009/0099/0100, reject 0000, and pass timezone matrices.
-10. Text-only Journal and all Ideas behavior unchanged; current sheet lock/identity/revision policy still governs save/delete/reveal; dirty detection includes pending media additions/removals. Playback completion from A cannot control B; playback releases before recording/re-record cleanup.
-11. Import/config audit: native media modules are confined to adapters/components, no root/browser/Telegram/backend imports, no auth secrets or media binary in AsyncStorage. Production uses the tested policies, including AppState and native auto-stop callbacks.
+- At day-open balance 12,800 and horizon 10 calendar days away: AUTO=1,280.00. Expense 350 => balance 12,450, spent 350, same limit 1,280, remaining 930.
+- MANUAL=500, available now 12,450, spent today 350 => remaining 150. If spent becomes 620, limit stays 500 and overspend is 120.
+- AUTO 15,000 over 6 days => 2,500. Expense 3,000 => balance 12,000; today still 2,500, overspend 500. Next day: 12,000/5=2,400 if nothing else changed.
+- AUTO 10.00 over 3 days => 3.33, not 3.34. Negative balance => limit 0 with visible deficit.
+- Actual income 5,000 later today increases available; it does not rewrite today's snapshot. Income is not a refund that reduces spent today.
 
-## Verification and implementer handoff
+Changing mode/manual amount/fallback horizon defaults to future days. Provide a separate explicit “Изменить лимит на сегодня” action with before/after, explanation and confirmation. In AUTO it recalculates from current balance and current future horizon; in MANUAL uses proposed amount. It updates today's row with revision+1/reason=explicit-change in the same write as any settings change. Expenses remain untouched and overspend is recalculated against the expressly changed value. No automatic prompt after every expense.
 
-Run and report actual results, without changing unrelated files to make them pass:
+Store at most one latest allowance row per date; revision identifies an explicit replacement. Past dates are read-only. Returning to a date after timezone/clock changes reuses its saved snapshot, never duplicates it. No synthetic historical snapshots for days the app was not opened; selected-day history says “Лимит не зафиксирован” when absent. On overnight form save, sample the current date again and establish the new day's allowance; keep an explicitly chosen transaction date. A default “today” date must be refreshed or shown for confirmation if the day changed while editing.
 
-```bash
-# mobile/
-npm test
-TZ=Europe/Kyiv npm test
-TZ=America/Los_Angeles npm test
-TZ=UTC npm test
-npm run typecheck
-npm run lint
-npx eslint .
-npx expo install --check
-npx expo-doctor
-npm run export:ios
+## 6. Expected and actual income
 
-# repository root
-npm run build
-git diff --check
-```
+Monthly SalarySchedule stays recognizable and backward-mappable: dayOfMonth, title, expected amount and timestamps remain. Native source/active metadata is additive; major-to-minor storage conversion is explicit. Several schedules support salary plus advance; identical dates are allowed, duplicate IDs are not. Editing a schedule affects future/unresolved expectations, not recorded income or past allowance values. Deleting/pausing a schedule never deletes receipts. Retain resolution refs as historical identifiers even when a schedule was deleted; do not regenerate a deleted schedule from receipts.
 
-Full ESLint's three existing warnings in `calendar-notifications.test.mjs` / `calendar-store.test.mjs` are baseline; no new warnings or suppression. Record dependency/doctor/network blockers accurately. Compare protected source/test hashes and inspect package/config/import diff. Do not treat an export as a native build.
+PlannedIncome represents one future/overdue expectation; FinanceIncome represents an actual receipt. From an expectation, “Получено” opens the income form with editable amount/date/source and commits income+received resolution+balance in ONE write. Stable occurrence key prevents duplicate receipt on rapid taps/retry. No payment is assumed from crossing midnight or reopening the app. “Пропустить” resolves an expectation without balance effect. Reopening a skipped occurrence removes that marker; received occurrences must be changed through their linked income, not posted twice.
 
-Runtime leakage scan (inspect comments separately from imports/calls):
+Deleting a linked income reverses its amount and removes its received marker, making the expectation unresolved if its source still exists. Editing its receipt amount/date does not change the original expected occurrence key. A skipped occurrence can later be received by replacing its marker atomically. A one-time expectation with a linked receipt is read-only except its descriptive title; delete expectation only retains the receipt and its historical reference. Monthly recurrence generation is bounded to requested month/nearest-next lookup, not materialized for thousands of years.
 
-```bash
-rg -n 'telegram|TELEGRAM_|localStorage|window\.|document\.|navigator\.|MediaRecorder|next/|cloudflare:|@/lib/|fetch\(|axios|expo-av|react-native-webview' mobile/app mobile/src
-rg -n 'expo-audio|expo-camera|expo-video|expo-file-system|base64|data:|arrayBuffer|readAsString|WORKAZY_API_TOKEN|GROQ_API_KEY|oai-authenticated-user-email' mobile/app mobile/src mobile/app.json mobile/package.json
-```
+## 7. Obligations and reminders UX
 
-New Expo media imports are now expected and must be confined to intended boundaries; do not reuse Slice 4's scan that rejects them wholesale. A data-URL string in a regression fixture or explanatory comment is not a runtime leak. No actual HTTP calls are expected in the local branch.
+| Stored kind | Label | Examples | Balance effect |
+| --- | --- | --- | --- |
+| payment | Платёж | rent, utilities, credit payment | none until separate actual expense |
+| debt | Я должен | debt to friend | none until separate actual expense |
+| receivable | Мне должны | friend owes user | none until separate actual income |
+| purchase | Покупка | phone, laptop | none until separate actual expense |
 
-Update README/status to describe delivered local recording/playback, per-file limits, exact permission/config/build requirements, sandbox file durability, missing-file/cleanup/retry behavior, unsaved-draft/process-death limitations and the deferred authenticated upload/transcription contract. Preserve the >5,000-character backend incompatibility and all prior pending native acceptance. No cloud or real-device claims based on mocks.
+Amount and title required; due date and reminder optional. Reminder toggle is OFF for new items; enabling requires dueDate and a time, suggested 09:00 on that due date. One local notification per obligation, no advance reminder or repeating nag. Removing due date explicitly turns reminder off. Overdue items remain visible; do not fire an immediate historical notification. Reminder denial does not erase due date or intent.
 
-Native/device checklist MUST remain pending until actually observed: fresh-install camera/microphone prompts and denial/Settings recovery; physical iPhone front/back capture and portrait orientation; audio input routing; one-tap stop and limit auto-stop; recorded file/container/duration/size; playback/scrubbing; rapid taps and interruption/lock/background; cancel/re-record cleanup; multiple/media-only attachments; offline restart after save; disk-full/write failures; long editor with keyboard/caret at end; compact/notched safe areas and Dynamic Type/VoiceOver; Plans/Calendar/Ideas smoke tests and no unsolicited notification/media prompts. The current machine has only CommandLineTools, not a verified iPhone setup.
+Completion/reopen is status-only (“Отметить выполненным”, help: “Баланс не изменится”). Do not label the action as executing a payment. Actual expense/income remains a separate user action in Operations, avoiding an implicit double debit/credit. No hidden link, partial settlement or interest calculation. Completing or deleting cancels the reminder after metadata commits; reopening schedules only a still-future configured reminder. Editing due date/time/title reschedules and verifies current content. Completed history remains accessible; delete requires identity/revision-aware confirmation and never changes balance.
 
-**Unit tests and Expo export do not prove camera, microphone, recording, playback, permission prompts or real iPhone behavior.** Report exact observed evidence and separate it from injected-port tests. No fabricated native acceptance, media uploads or screenshots.
+## 8. Persistence, migration and preservation
 
-Final implementation report: exact files, functioning local flows, storage/ownership/cleanup guarantees, backend deferral reasons, production-path coverage, command outcomes, unchanged Slices 1–4 evidence and pending native checks. Stop after Slice 5; do not start Finance or a credential/backend project.
+Storage key: `workazy-native-finance-v1`, envelope version 1. Use AsyncStorage behind an injected port as in existing native stores. Separate OS registry key `workazy-native-finance-notifications-v1` stores `{version:1,records,savedAt}`; records use the Calendar registry lifecycle/status contract with obligationId and kind='due'. A registry failure is a reminder failure, never a rollback of a successfully saved financial operation.
+
+Strict parse before publish AND before every write: validate full envelope, finite safe integer amounts and aggregates, enums, IDs/duplicates, real dates, timestamps, reference uniqueness and receipt/resolution consistency. Unknown schema version, corrupt bytes or invalid rows => load-error; retain original bytes, block writes and offer retry. Never replace with empty state or filter “bad” records out. No other feature's storage is touched. Corrupt notification registry blocks its destructive reconciliation until recovered; do not delete unknown OS notifications.
+
+Store pattern: loading/ready/load-error, frozen snapshot wrapper and deeply frozen rows/nested refs/settings, monotonic committed revision, synchronous write gate acquired before awaits. CRUD accepts expected identity/revision and changed fields; stale/busy submissions return typed results. Build exact candidate from latest committed state, validate/serialize, await durable setItem, then publish. No optimistic balance or allowance update. Failed write leaves previous state and UI draft intact; retry uses stable intent/entity IDs. Domain mutations and registry writes cannot overwrite each other's envelopes. App termination before a write resolves is not claimed atomic/durable. Hydrate before finance reminder reconciliation.
+
+### Legacy migration contract (no automatic web access)
+
+No earlier native Finance key/schema was found. Do NOT read other native slices for finance or introduce an unrequested web import flow. Slice 6 should include an injected pure, tested `migrateLegacyFinanceState` adapter so existing FinanceState is understood; its runtime invocation requires a future explicitly supplied transfer source. New native users start empty. Existing web localStorage and D1 JSON remain untouched and authoritative for web; there is no automatic cross-install/browser migration.
+
+When a transfer is separately authorized, its transaction must be:
+
+1. Preserve exact raw source bytes in a transfer backup before any target write. Decode either FinanceState or explicitly selected `personal-planner-v1.finances`; never guess between competing snapshots. No timestamp-winner overwrite of a populated native dataset.
+2. Validate all source rows first. Preserve IDs, array order, optional fields, complete text, timestamps and completed states. An absent legacy obligations collection becomes []; missing required collections, duplicates, invalid calendar dates, unsupported keys/precision/timestamps or unsafe amounts produce a report and block the whole conversion. No silent salvage. Legacy normalizer's regex-only dates/drop behavior is not the migration validator.
+3. Default known web currency to UAH and state that assumption in the transfer preview. Exact two-decimal major values convert to minor units using decimal parsing of their canonical number representation; binary artifacts or >2 decimals require an explicit rounding decision and report, with original bytes retained. Do not silently round legitimate source data. Legacy zero schedule amount is retained but not a horizon candidate.
+4. Legacy balance becomes balanceMinor as-is; do NOT subtract imported expenses again. Imported expenses get balancePolicy='legacy-history': they appear in history/spent totals, but editing/deleting them does not refund/debit today's balance. Explain this during transfer and in their edit/delete preview. Historical cashflow cannot be reconstructed because the web allowed balance resets and clamped overspending.
+5. salarySchedules map to active monthly SalarySchedule with no fabricated source label. Existing debt=>debt owed by user; purchase=>purchase; never guess receivable/payment from text. dueDate/reminderTime and completed preserve exactly; date with absent reminder time becomes explicit 09:00 to preserve the legacy default-reminder intent, recorded as a migration change. A reminderTime without dueDate must be reported rather than silently discarded.
+6. No receipts, income entries or historical allowances are invented. Preserve an existing valid FinanceState.updatedAt; if absent, use the accepted transfer instant for native state.updatedAt and balanceUpdatedAt (new bookkeeping, not a claimed historical transaction time). Set balanceUpdatedAt from legacy updatedAt when present. AUTO configuration starts without snapshots; establish today's allowance only after transfer is accepted. No notifications before successful target persistence AND a separately granted native notification permission; importing reminder intent is not consent to a new permission prompt.
+7. Validate/round-trip V1, persist target once, then publish; failure retains source/backup and leaves prior target unchanged. Repeated transfer ID must be idempotent, not append duplicates. Populated target requires a later explicit merge design; refuse automatic replacement. Transfer tooling/import UI, backup transport and server format changes are outside Slice 6.
+
+Future native V2 must retain V1 bytes until conversion succeeds, use an explicit versioned adapter and refuse unknown future versions. Native-only negative balance, new kinds, currency, income and allowance snapshots cannot be pushed to legacy web unchanged. Preserve concepts via adapters; do not advertise wire compatibility merely because type names match.
+
+## 9. Native notification integration and cross-feature ownership
+
+Reuse existing Calendar date conversion, trigger decoding, permission semantics, native pending verification and convergence protocol. No Telegram or server scheduling calls. Prefer small neutral helpers extracted from current modules over copying the entire reconciler or making a generic plugin framework.
+
+- Finance namespace `workazy.finance.v1`, owner `workazy-finance-v1`, deterministic ID `workazy.finance.v1:<obligationId>:due`. Calendar namespace/owner/IDs remain exactly unchanged. Data includes owner, obligationId, kind='due', fingerprint and persisted targetTriggerAt/scheduledAt using current adapter policy. Fingerprint covers trigger, title and kind; use generic lock-screen body “Финансовое напоминание · <title>”, no amount, note or debt direction. Title is user-visible on lock screen; make that clear beside the reminder toggle.
+- One process-level serial **OS reconciliation queue** shared by Calendar and Finance, including cancel/list/schedule/read-back work. Each domain retains its own store, registry and desired planner. Do not wrap only individual calls: capacity read -> decisions -> mutations -> verification must be ordered against the other domain. Domain revision changes abort stale passes; rerun from latest state. Never await a nested acquisition of this queue.
+- Preserve existing total pending app policy 48, counting ALL OS pending requests, including unknown/foreign requests. Never allocate 48 per domain. On combined startup, enqueue Calendar then Finance; afterwards FIFO with coalesced per-domain requests. Within a domain use earliest trigger then stable ID. Existing valid foreign/domain requests are not evicted to prioritize another domain. This deliberately does not guarantee globally earliest-48 fairness; capacity-limited UI must say reminders remain unscheduled and will retry on foreground/tick. No claim all financial reminders fire when capacity is full.
+- Each reconciler cancels only its positively owned IDs; it must never cancel the other domain or call cancelAll. Finance's ownership predicate must not recognize Calendar prefixes. Unknown inventory occupies slots. A successful schedule is verified against actual native title/body/trigger AND metadata, preserving current absolute vs iOS interval tolerance/target policy. Registry metadata alone is not proof.
+- Failed list/cancel/schedule/verification/registry-write yields visible retryable notification state; finance Save may succeed while reminders need retry. Orphan/duplicate cleanup is scoped to confirmed ownership and latest committed desired state. Re-list after cancellations before allocating slots. Restart discovers actual pending inventory even if the last registry write failed.
+- Reconcile after hydrated startup, committed relevant CRUD, completion/delete, foreground/focus, timezone change and the existing active-only periodic refresh. No background timer guarantee or permission prompt at startup. Reuse one foreground handler; do not overwrite it with a Finance-only handler. Shared permission request flow is single-flight; ask only from explicit “Включить уведомления” action. Denied => Settings guidance; provisional => honest quiet-delivery status. Returning from Settings refreshes both domains.
+- On notification tap, route Finance-owned payloads to the existing Finance tab/obligation only after hydration and live ID check; missing/deleted target shows list. Never interpret Finance payload as Calendar event. No new inbox.
+
+Required narrow exception to protected Calendar code: shared queue integration and neutral extraction only, retaining Calendar storage schema, IDs, start/advance semantics and existing tests. Update root lifecycle wiring only as needed for Finance hydration/notifications. Capture protected hashes before implementation; document this exception in the implementation report. Everything else in Calendar remains protected.
+
+## 10. Dates and mobile information architecture
+
+All financial dates are local Gregorian dates 0001–9999. Reuse proven native Calendar/Records date primitives or extract a neutral pure helper; never construct years 0–99 with `new Date(year,month,day)` or divide DST-spanning milliseconds to count days. Numeric/lexical sort is safe only after strict validation. Month/day navigation clamps and stops at range edges; no year 0000/10000 or overflow recurrence. Invalid timezone/unsupported native date-picker range produces explicit fallback text-date entry or unavailable reminder, not a remapped date.
+
+Reminder wall-clock dates/times follow the CURRENT device timezone, as native Calendar does. Travel changes reminder instant after reconciliation, not stored date. Use existing earlier-occurrence policy for autumn folds and explicit unscheduleable warning for spring gaps; no silent shift. Past trigger => no immediate alert. Existing web Kyiv policy is source context, not a fixed native timezone. Tests inject timezone/clock.
+
+One existing bottom tab, three internal segments: **Обзор | Операции | Обязательства**. Income settings are an Overview sheet, not a fourth segment.
+
+- Overview: available balance (tap to explicitly correct), fixed daily limit + mode/help, spent today, remaining/overspent, Add expense / Add income, next expected income and next open due obligation. Today's pending and overdue items must remain visible before future events; stable ordering date then ID; no fake “next” when none exists. Compact collapsible month calendar below the essential content.
+- Operations: mixed actual expense/income history, newest date then createdAt then ID; day filter from financial calendar, clear filter action, add/edit/delete sheets. A small type filter is sufficient; no report-builder. Expected amounts never masquerade as actual transactions.
+- Obligations: open/completed toggle, grouped readable kind labels or small optional kind filter; nearest/overdue due first, undated last. No four nested tab systems. Due date is not inherently a reminder. Long titles/notes have a full readable view.
+- Finance calendar is a view into Finance data only: expense/income activity, unresolved expected income and obligation due markers; selecting a day shows actual totals, separately labeled expectations/due items and saved allowance if present. No duplicate CalendarEvent creation. No forecast allowance presented as historical fact. Future day has no actual transactions and no invented daily snapshot.
+
+Use existing tokens, native typography and 44pt targets; semantic mint for income/available/success, restrained expense styling, explicit minus and “Превышение” text rather than color-only feedback. No desktop grid/tables or giant charts. Forms keyboard-safe with persistent reachable Save/Cancel, decimal keyboard plus visible currency, accessible labels, Dynamic Type and safe areas. Empty/loading/load-error/persist-error/notification-error/capacity states are real and retryable. No demo finances seeded in production.
+
+## 11. Implementation boundaries and acceptance criteria
+
+Expected future files: `types/finance.ts`; `features/finance/{financeModel,financeDates,financeStore,useFinanceStore,financeSheetGuard,FinanceScreen,...}`; `storage/financeStorage.ts`; pure Finance notification planner/reconciler/registry adapter; shared OS queue; small additions to existing root lifecycle. Names may follow current conventions. Add no package unless installed native facilities are demonstrably insufficient; no new HTTP or chart dependencies.
+
+Preserve root app/API/DB/worker/Telegram files and tests; Plans, Ideas, Journal/media/Records behavior, theme, four tabs and Calendar data contract. Only the narrow Calendar queue integration above is allowed. Before implementation record current git status, protected-file hashes and actual baseline checks; do not erase unrelated dirty changes from Slice 5.
+
+Acceptance requires working persisted flows, not just UI:
+
+1. First setup, signed balance, currency lock and both limit modes work offline through restart.
+2. Exact example 500 limit / 620 expense visibly remains 500 / 620 / overspend 120 after CRUD, rerender, restart and clock refresh.
+3. Actual income changes balance only once; expected income never auto-posts. Monthly and one-time receipts/retries are duplicate-safe.
+4. Expenses/incomes support add/edit/delete with exact deltas and no loss of notes/legacy fields. Past edits do not rewrite stored historical/today allowances. Failed save leaves drafts and persisted state intact.
+5. All four obligation kinds, due dates, optional reminders and completed history work; status changes never silently move money.
+6. Reminder scheduling/edit/delete/complete/reopen/restart/Settings return converge without touching Calendar-owned requests or exceeding shared capacity through a race.
+7. Legacy adapter preserves all accepted source data without double-applying expenses; incompatible data blocks with a report and no writes. No import or cloud sync claim.
+8. Finance calendar remains a Finance projection; no duplicate main Calendar entries or new primary navigation.
+9. Existing 362 baseline tests remain unchanged and pass; Finance tests exercise production-used paths. No runtime/security leakage.
+
+## 12. Test and verification plan
+
+Tests must call the real parser/model/store/reconciler/controller using injected storage/clock/OS ports; UI wiring receives separate inspection. Do not accept source-regex-only claims or tests of unused copies.
+
+- Money: integer cents, comma/dot input, zero/negative boundaries, unsafe integer/aggregate overflow, >2 decimals, huge amounts, subtract below zero, exact inverse edit/delete; imported historical effect zero; explicit balance correction then old operation edit.
+- Allowance: persisted pre-expense snapshot, identical value after expense/income/add/edit/delete/restart; 500/350/150 and 500/620/−120; floor cents; no horizon; fallback expiration; income today not zero divisor; midnight crossing, unopened days, timezone return, explicit mode/limit change versus next-day defaults; failed snapshot persistence and concurrent first expenses.
+- Expected income: 29/30/31 clamp/leap years; multiple schedules same day; zero expectations; next year boundary; today/overdue/skipped/received; duplicate receipt rapid taps; delete receipt reopens occurrence; schedule deletion retains linked income; no automatic credit.
+- Obligations: all kinds, due-less reminders refused, default off, completion does not change balance, reopen past vs future, stale confirmation after edit/delete, long untouched fields and completed history.
+- Persistence/migration: absent key vs corrupt key vs future version; unknown fields/enums/duplicate IDs; deeply frozen snapshots; parse before every write; write gate held across awaits; storage rejection, retry/stable IDs, hydration and async old completion; legacy balance not recomputed; optional obligations; legacy zero schedule; precision/invalid dates report; no source deletion; authorized transfer fixture idempotency and no target overwrite.
+- Notifications: two domains against ONE fake OS inventory/queue. Pause inside OS list/schedule/cancel, mutate state and enqueue other domain before releasing gate. Prove no duplicate schedule, cross-cancel, stale title/time or >48 allocation. Foreign requests, corrupt registry, cancelled-but-still-pending, successful schedule with failed registry write, process restart, denied/provisional permission, Settings return, empty/deleted target tap, capacity refill. Verify real native trigger/content rather than metadata alone.
+- Dates: UTC, Europe/Kyiv, America/Los_Angeles; years 0001/0009/0099/0100/9999; reject 0000/impossible dates; DST gaps/folds; travel changes timezone; no fixed offset/current date. Existing Calendar/Records date tests remain unchanged.
+- Regressions: >100k Journal text, untouched optional fields, immutable snapshots and persist-before-commit; Slice 5 files/leases/recorders/playback unchanged; all protected baseline tests pass. Scan for browser/server imports, Telegram, HTTP, credentials and binary/base64 state.
+
+Future implementation commands: mobile `npm test`, all three TZ test runs, `npm run typecheck`, `npm run lint`, `npx eslint .`, `npx expo install --check`, `npx expo-doctor`, `npm run export:ios`; root `npm run build`; `git diff --check`; protected hashes/diff and leakage scans. Report actual results and network/tool blockers. Preserve the three existing Calendar-test ESLint warnings without adding suppressions. Unit tests/export are not native acceptance.
+
+## 13. Proposed product-contract wording (do not edit those files now)
+
+No primary section or existing concept is removed. These clarifications are authorized by the user's product request, but the source contracts remain unchanged in this preparation task:
+
+- `MASTER_PROMPT.md:108`, “Salary schedule”: propose “Expected income schedules (including SalarySchedule), one-time expected income and explicitly recorded actual income.” SalarySchedule remains monthly and legacy IDs/values migrate explicitly; no API-compatible rename is asserted.
+- `MASTER_PROMPT.md:112`, fixed calculated allowance sentence: propose “The daily allowance is saved for each local date in AUTO or MANUAL mode. Expenses are tracked against it and never automatically rewrite it. Only an explicit confirmed change may replace today's allowance; a new local date establishes a new allowance.” This clarifies the fixed-period boundary and adds manual mode without weakening the invariant.
+- `tasks/mobile-migration.md:93–104`, Slice 6 implementation/acceptance block: propose “Implement one Finance tab with Overview, Operations and Obligations; current balance and primary currency; fixed daily allowance (AUTO/MANUAL); SalarySchedule-compatible expected income and one-time expectations; expense/income CRUD; payment/debt/receivable/purchase obligations; native local reminders. Accept only with versioned local persistence, lossless-or-blocked legacy conversion, no automatic allowance rewrite from operations, and Calendar-isolated reminder reconciliation under shared OS capacity.”
+
+Currency selection within Finance is a necessary Finance input, not implementation of general Slice 7 Settings. Extended native kinds/amount representation require the migration/adapter defined here; root wire contracts stay unchanged. No amendment to MASTER_PROMPT or tasks/mobile-migration is made by this brief.
+
+## 14. Native-device acceptance — PENDING until observed
+
+All previous slices' native acceptance remains pending. Finance requires actual iPhone observation of: first setup and locale decimal keyboard; keyboard-safe forms/scrolling; notched/Dynamic Island safe areas; large Dynamic Type/VoiceOver; long text and large/negative values; local midnight/foreground/travel updates; permission prompt/denial/provisional/Settings return; obligation notification scheduling/delivery/tap/cancel/edit/reopen while Calendar reminders coexist; native trigger timing across DST; app termination/restart and storage failure/disk-full behavior. No claimed bank balance accuracy, delivery guarantee, background execution or device success from mocks/export.
+
+Preparation deliverable is this document only. Finance implementation, source contract edits and native acceptance are not performed or claimed.

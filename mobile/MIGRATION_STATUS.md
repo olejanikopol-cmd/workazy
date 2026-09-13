@@ -1446,6 +1446,153 @@ native-controlled video playback/ownership and physical capture were not observe
 hardware (only Xcode CommandLineTools are installed). Instrumented fakes are not
 device evidence.
 
+### Slice 6A — Finance core implemented (2026-09-12)
+
+**Scope delivered (native Finance, local only).** One Finance tab with three internal
+sections (Обзор / Операции / Обязательства), a native Finance domain, versioned local
+persistence, first-run setup, currency, signed balance, AUTO/MANUAL fixed daily
+allowance, actual expenses/incomes with exact deltas, monthly expected income
+(SalarySchedule-compatible) plus one-time expectations with receipt resolution,
+obligations CRUD (payment/debt/receivable/purchase, due dates, completion history,
+reminder INTENT fields), a Finance calendar projection, and a PURE tested legacy
+migration adapter (no import UI, no runtime transfer).
+
+**Obligation notification scheduling is NOT implemented** — it is explicitly deferred
+to Slice 6B. Slice 6A stores `reminderEnabled`/`reminderTime` intent only: no Finance
+file imports `expo-notifications`, no registry key is written, and no reconciler,
+queue, permission flow or tap routing exists yet (asserted by
+`tests/finance-wiring.test.mjs`). The obligation form says so to the user.
+
+#### Files
+
+| Kind | File |
+| --- | --- |
+| Types | `src/types/finance.ts` |
+| Pure domain | `src/features/finance/{financeDates,financeMoney,financeModel,financeLegacyAdapter}.ts` |
+| Store | `src/features/finance/financeStore.ts` (factory) + `useFinanceStore.ts` (AsyncStorage/Crypto singleton) |
+| Storage | `src/storage/financeStorage.ts` (key `workazy-native-finance-v1`, version 1, strict parser/serializer) |
+| UI | `src/features/finance/{FinanceScreen,FinanceSections,FinanceCalendar,FinanceForms,FinanceSheets}.tsx` |
+| Tests | `tests/finance-{money,model,store,legacy,wiring}.test.mjs` |
+
+#### Product invariants as implemented
+
+| Invariant | Implementation | Regression |
+| --- | --- | --- |
+| Money is a safe integer in minor units | `parseMoneyToMinor` builds the integer from digit STRINGS (no float math) | comma/dot input, `1,005` rejected as a precision error, `1e3` rejected, unsafe magnitudes rejected |
+| Signed balance allowed, never clamped | `balanceMinor` may be negative; AUTO uses `max(0, balance)/N` for the limit only | expense below zero keeps −5 000; a correction to −2 500 keeps the deficit and reports a 0 limit |
+| Expected income never changes the balance | schedules/expectations have no balance path; only a receipt does | adding/editing expectations keeps the balance; a receipt changes it exactly once |
+| Obligations never change the balance | obligation commands touch `obligations` only | four kinds added/completed/reopened/edited/deleted with an unchanged balance |
+| Daily allowance persists per local date | one row per date, written once | 500/350→150, 500/620→overspend 120, limit stays 500 after edits/deletes/restart |
+| Operations never rewrite today's snapshot | `establishAllowance` returns an existing row untouched; only `changeTodayAllowance` replaces it (revision+1, reason `explicit-change`) | expense+income+edit+delete leave `amountMinor`/`revision` identical; explicit change updates it |
+| Tomorrow derives a new AUTO snapshot | the horizon is recomputed per date from the then-current balance | 15 000/6 ⇒ 2 500, after a 3 000 expense the next day is 12 000/5 = 2 400; both rows coexist |
+| No synthetic historical allowances | a date without a row is `unavailable: true` and is never back-filled | the multi-day test asserts exactly one row per opened date |
+| Parse before publish AND before every write | `commit()` serializes, strictly re-parses the exact bytes, freezes the validated snapshot, then writes | every recorded write parses; corrupt/unknown-version/dangling-receipt envelopes become `load-error` with the original bytes kept and writes blocked |
+| Failed write leaves committed state unchanged | the snapshot is assigned only after `setItem` resolves | injected write failure keeps the previous snapshot + report; retry succeeds on the same revision |
+| Deeply frozen published snapshots | `deepFreeze` over the parsed snapshot | `Object.isFrozen` asserted for the snapshot, settings, rows and nested allowance rows; a strict-mode mutation throws |
+| Currency selected during setup, locked with data | `changeCurrency` refuses once Finance contains data | USD at setup persists across restart; a later change is `currency-locked` |
+| Legacy text/data preserved when accepted | the adapter validates every row first and blocks the WHOLE conversion on any defect | lossless fixture (IDs, order, text, timestamps, completed states, due dates, 09:00 legacy reminder intent); >2-decimal/duplicate/invalid-date/unsupported-kind/reminder-without-date blockers; `target-not-empty`; transfer-ID idempotency |
+| No cloud Finance sync, no old web API | no HTTP/browser/Telegram imports anywhere in the feature | the wiring test scans every Finance file and the storage key |
+
+#### Allowance rules
+
+MANUAL persists `manualLimitMinor`. AUTO persists the horizon
+(`nextExpectedIncomeDate` strictly after D, else the explicit `fallbackEndDate`, never an
+assumed 30-day month), the calendar-day count, the base balance and `capturedAt`.
+Day-of-month 29/30/31 clamp to the real month end (leap years included). Today's
+unresolved expectation is shown but never divides by zero days, and a zero-amount
+(legacy) schedule is retained without becoming a horizon candidate. With no usable
+horizon the limit is simply unavailable (no row) while expenses and the balance stay
+usable; a fallback date must be strictly after today.
+
+#### Store guarantees
+
+`loading | ready | load-error`; a synchronous write gate (a second mutation while a
+write is in flight returns `busy` — no queueing); monotonic committed revision with
+`stale` rejection for CRUD; the day's allowance is established in the SAME revision and
+the SAME write as the operation it accompanies (one envelope, one revision); `setup` is
+the only mutation accepted before `initialized`.
+
+#### Verification (actual, 2026-09-12)
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **422 passed / 0 failed** (362 prior baseline + 60 new Finance tests) |
+| `TZ=Europe/Kyiv npm test` | 422 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 422 passed / 0 failed |
+| `TZ=UTC npm test` | 422 passed / 0 failed |
+| `npm run typecheck` | clean |
+| `npm run lint` | 0 problems |
+| `npx eslint .` | 0 errors, the same 3 pre-existing Calendar test warnings |
+| `npx expo install --check` | “Dependencies are up to date” |
+| `npx expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | succeeded → `dist` |
+| root `npm run build` | completed, sites artifact verified |
+| `git diff --check` | clean |
+| leakage scans | no HTTP/browser/Telegram/backend imports, no secrets, no base64/binary state, no new dependency |
+
+The 223 Slice 1–4 baseline tests and the Slice 5 media guarantees remain untouched and
+green. **No Slice 6B work was started**: obligations store reminder intent only, and the
+shared OS queue / Finance registry / planner / reconciler / permission flow / tap
+routing do not exist yet; no Calendar file was modified.
+
+**Native/device acceptance for Finance remains PENDING** — first setup with the locale
+decimal keyboard, keyboard-safe scrolling, safe areas, Dynamic Type/VoiceOver,
+midnight/foreground/travel date changes, storage failure and restart continuity were not
+observed on hardware (only Xcode CommandLineTools are installed). Unit tests, the iOS
+export and the root build are not device evidence.
+
+### Slice 6A — review fixes: aggregates, allowance ordering, monthly occurrences, dates, sheets (2026-09-12)
+
+Nine findings from the Slice 6A review were fixed in production code and covered by new
+regressions (`tests/finance-fixes.test.mjs`). Scope stayed inside Finance: no Slice 6B
+work (no `expo-notifications`, registry, shared OS queue, permission flow or tap
+routing), no Calendar/Journal/Media/Ideas/Plans behaviour change, no HTTP/cloud sync.
+
+| # | Finding | Fix | Regression |
+| --- | --- | --- | --- |
+| 1 | Individually-safe amounts could sum to an unsafe aggregate, and `spentOn()` returned `0` on overflow | One pure predicate (`financeAggregates.validateFinanceAggregates`) checks the balance, all collection totals, every per-date total and the stored allowance math. It runs in the MODEL (predictive per-date/overall deltas before a candidate exists), in the STORE (`commit` refuses the candidate before any write) and in the PARSER (an unsafe hydrated envelope is `aggregate-overflow`). `aggregateMinor` returns `null` instead of coercing, and `spentOn`/`incomeOn`/`dayTotals`/`monthTotals` are nullable so an unsafe value is never shown as zero | 10×10^15 minor units: the third command is a typed `overflow` with `setItem` never called and the committed state byte-identical; an unsafe envelope never loads; obligation/expectation totals guarded; day views expose `invalid` instead of a zero |
+| 2 | `correctBalance`, settings and schedule/expectation mutations used `commitState`, so the day's allowance could derive from the POST-mutation balance | Every mutation that can change the balance or the AUTO horizon now goes through the allowance-first path: the day's row is established from the PRE-mutation committed state inside the SAME candidate and the SAME durable write (one revision) | balance 10 000 with a 10-day horizon: the first mutation (correction / schedule edit / expectation add / settings change) stores 1 000 from the pre-mutation balance; a failed write persists neither part; concurrent first mutations yield one row (`busy`) |
+| 3 | Received/skipped existed only for one-time expectations, so a monthly occurrence could be paid twice and never left the horizon | New `occurrenceResolutions` collection keyed by `scheduleId + date` (received / skipped / reopen, receipt link, retained after the schedule is deleted). `nextExpectedIncomeDate` skips resolved occurrences; the Finance calendar and the Overview list project them | receive posts income + balance once, a rapid duplicate is `already-received`, skip leaves the horizon (next month applies), reopen restores it, deleting the linked income reopens the occurrence, an income edit keeps the identity, two schedules on one date resolve separately, a deleted schedule keeps receipts and historical refs |
+| 4 | An AUTO setup without a horizon offered a manual-limit action that required an existing row (`missing`), and limit settings had no UI after setup | New `applyTodayAllowance` (create when absent, replace with revision + 1 when present) and `saveLimitSettings` (permanent mode/manual/fallback + optional explicit application to today in ONE write). `FinanceLimitSheet` creates, `FinanceLimitSettingsSheet` edits the permanent defaults | no horizon → AUTO is a typed `no-horizon`, MANUAL 500 creates today's row and survives a restart; a permanent switch does not rewrite today's row unless `applyToday` is chosen; a new local date derives from the new settings; a configured fallback enables later AUTO establishment |
+
+| 5 | `today` only changed on rerender and forms kept the initial default date, so a form saved after midnight could post to yesterday | `useFinanceDay` (focus + AppState + bounded tick) is the single clock source; `createFinanceDayController` (injected clock, reports a day change once) and `resolveFormDate` are pure and tested. Sheets hold a `touched` flag only: an untouched default follows the live today, an explicit choice is preserved | untouched default adopts the new day, an explicit date survives midnight, the controller reports one change per new date, a midnight crossing establishes the NEW day's allowance with no stale snapshot |
+| 6 | A sheet draft came from the old entity while the submit used the latest render revision, and a late completion could close a newer sheet | `createSheetRegistry` gives every opened sheet a monotonic `instanceId`, its entity id and the committed revision captured at open time; completion closes only the matching instance (typed `stale` otherwise, draft stays open) | a late completion cannot close a newer sheet; a submit against the captured revision is `stale` with no write and the draft preserved |
+| 7 | The adapter accepted legacy text that the V1 parser later refused, and form caps were applied to untouched values | Persisted text is bounded by `PERSISTED_TEXT_LIMIT` (larger than the form caps), while form caps apply ONLY to changed fields (`textChangeValid`): an unchanged value (including long legacy text and incidental whitespace) is preserved byte-for-byte, absence stays absent | a 4 003-char legacy note survives transfer, hydration, restart and an amount-only edit exactly; a changed over-limit note/title is `validation`; an unchanged long title/note is accepted; an absent optional field stays absent |
+| 8 | The parser coerced wrong runtime types (`String(raw.date)`) | All coercion removed: dates/times/timestamps must be exact strings, amounts/booleans/enums/days/revisions exact numbers/booleans, collections must be arrays, `null` is invalid where absence is expected, unknown keys are rejected | 13 malformed-type regressions (`load-error` each) plus a valid envelope that still parses; corrupt bytes keep the raw payload and block writes |
+| 9 | `Object.isFrozen(store.getSnapshot())` was false | `publish` wraps the phase/snapshot/saving/error state in `deepFreeze`, and every real publication creates a NEW frozen wrapper | wrapper, envelope, settings, arrays and rows are frozen; strict-mode mutation attempts throw; the subscriber sees a new identity on a real commit and a stable identity otherwise |
+
+#### Mutation check (tests fail on the pre-fix behaviour)
+
+Each fix was validated by reverting it briefly and re-running the matching regression:
+removing the allowance-first routing fails the first-mutation tests; ignoring occurrence
+resolutions in the horizon fails the monthly skip/reopen test; removing the frozen
+wrapper fails the wrapper test; restoring `String(raw.date)` fails the malformed-type
+suite. The aggregate-overflow regression is caught at whichever guard remains — the model
+delta/aggregate guard, the store candidate gate and the parser gate are deliberately
+redundant layers, and no public command can produce an unsafe aggregate.
+
+#### Verification (actual, 2026-09-12)
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **454 passed / 0 failed** (362 prior baseline + 60 Slice 6A + 32 new fix tests) |
+| `TZ=Europe/Kyiv npm test` | 454 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 454 passed / 0 failed |
+| `TZ=UTC npm test` | 454 passed / 0 failed |
+| `npm run typecheck` | clean |
+| `npm run lint` | 0 problems |
+| `npx eslint .` | 0 errors, the same 3 pre-existing Calendar test warnings |
+| `npx expo install --check` | “Dependencies are up to date” |
+| `npx expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | succeeded → `dist` |
+| root `npm run build` | completed, sites artifact verified |
+| `git diff --check` | clean |
+| leakage/scope scans | no HTTP/browser/Telegram/backend imports, no `expo-notifications` in Finance, no secrets, no new dependency |
+
+Obligation reminder NOTIFICATION SCHEDULING remains deferred to Slice 6B (intent fields
+only). Native/device acceptance for Finance remains PENDING (only Xcode CommandLineTools
+are installed).
+
 ### iPhone verification status (all slices)
 
 **Native launch/notification delivery/visual/VoiceOver acceptance PENDING** on all
@@ -1513,9 +1660,89 @@ Records reminders, and AI.
   offline playback, permission UX, lease-based cleanup/GC, serialized destructive
   sweeps, verified retries, identity-bound recorders); authenticated
   upload/sync/transcription deferred by evidence. Native acceptance pending.
-- Slice 6 — Finance (not started).
+- Slice 6 — Finance: 6A core implemented and fixes verified; 6B notifications deferred.
 - Slice 7 — Polish, onboarding, accessibility, visual acceptance (not started).
 
 Do not treat Slices 1–5 as passed until the iPhone acceptance items above are
 completed on hardware/simulator. This file records actual results; pending items
 must not be relabeled as verified.
+
+### Slice 6A — interrupted round-2 fixes completed
+
+The interrupted work had applied most production changes but left
+`finance-fixes2.test.mjs` as fixture scaffolding without regression tests. The earlier
+454-test report above describes round 1, not verification of these subsequent fixes.
+
+Completed production paths:
+- Every balance/horizon command and obligation mutation establishes the current local
+  day's allowance from committed pre-mutation state. Recovery from a missing horizon
+  establishes the now-usable allowance in the same candidate/write. Explicit first
+  application starts at allowance revision 1; subsequent replacements increment it.
+- All mutable sheet submissions use their opening revision. Instance-bound completions
+  cannot close a newer draft. Background day establishment waits while a sheet is open;
+  the submitted command establishes the new day atomically instead.
+- Expense, income and receipt forms sample and validate against the same submit-time
+  local date, including the interval before the next periodic refresh. An explicit
+  transaction date is preserved. The live day hook uses the injected-clock controller.
+- Monthly receipts expose today's and overdue occurrences separately from the strictly
+  future AUTO horizon. Skipped occurrences remain reopenable. No overdue occurrences
+  are invented before schedule creation; distinct schedules retain distinct identities.
+- Untouched legacy titles/notes and optional presence survive the actual form path;
+  only edited text is trimmed. Initial and later store wrappers are deeply frozen.
+  Stored timestamps require exact string types; no timestamp-array coercion remains.
+- The limit card describes the saved allowance mode, independently of future defaults.
+
+`finance-fixes2.test.mjs` now contains 12 regression tests using production model/store,
+parser and form helpers. Two tests execute the actual TSX forms with mocked React hooks
+and native host components (not native rendering), including midnight submission and
+long obligation text. Two prior Finance test expectations were corrected because adding
+an initial usable schedule now establishes the allowance immediately. The previous
+362 non-Finance baseline tests are unchanged.
+
+Final verification: 466/466 tests passed normally and under Europe/Kyiv,
+America/Los_Angeles and UTC; TypeScript, Expo lint, ESLint, Expo dependency check,
+Expo Doctor (21/21), iOS export and root build checked. ESLint retains only the three
+pre-existing Calendar-test warnings. No new dependency, backend contract change or
+protected-feature modification. `git diff --check` is part of the final check.
+
+Slice 6A core fixes are complete. Slice 6B OS scheduling, registry, shared notification
+queue, permission flow and tap routing remain deferred. Native/device visual, keyboard,
+VoiceOver, storage and lifecycle acceptance remains PENDING; mocks/export do not prove
+those guarantees. No deployment or commit was performed by this completion task.
+
+### Slice 6A — final three corrections implemented; review pending
+
+This entry supersedes the earlier completion claim for the three findings in the final
+re-review. It records implementation and checks, not REVIEW_OK or device acceptance.
+
+1. Expense, income and obligation edits validate the complete replacement candidate
+   with the existing aggregate validator. The old intermediate per-date check no
+   longer double-counts an edited row. Safe note/category/source edits and date moves
+   preserve the exact totals; genuinely unsafe final aggregates fail before storage.
+2. Every successful legacy conversion, including the idempotent return path, passes
+   the actual strict V1 parser. Migrated expense notes, obligation titles/notes and
+   SalarySchedule titles are checked against the shared persisted text limit. Above-limit
+   text returns a contextual `incompatible-persisted-text` blocker without a partial
+   snapshot or truncation. The exact limit remains lossless. Legacy fixtures assert
+   success implies a successful V1 round-trip.
+3. The SalarySchedule form tracks whether the amount field was touched. An existing
+   zero amount remains editable for title/day/active changes without changing its
+   value. Touched invalid amounts use ordinary validation; the domain also rejects a
+   zero submitted as an explicit amount edit. Zero expectations remain outside AUTO
+   horizon calculation and never credit the balance.
+
+Six production regressions cover large expense/income replacement edits, genuine
+final overflow with no write/publication, date moves, all migrated text boundaries,
+full-envelope migration validation and untouched/touched zero schedules. The zero
+schedule UI test executes the real TSX form with native hosts/hooks mocked and sends
+its draft to the production store.
+
+Verification: 472/472 tests passed normally and in Europe/Kyiv, America/Los_Angeles
+and UTC. TypeScript, Expo lint, ESLint, Expo dependency check, Expo Doctor (21/21),
+iOS export, root build and git diff --check all passed.
+ESLint retains the three pre-existing Calendar-test warnings. The previous 362
+non-Finance baseline tests are unchanged; no protected feature or dependency was edited.
+Scope scans found no Finance native notification integration, HTTP or browser storage.
+
+Slice 6B and Slice 7 have not started. Native/iPhone acceptance remains PENDING.
+A separate review is still required; passing tests/export does not constitute REVIEW_OK.
