@@ -13,6 +13,8 @@ import { reconcileCalendarNotifications, type ReconcileResult } from './calendar
 import type { CalendarEvent, CalendarNotificationRecord } from '@/types/calendar';
 import type { CalendarNotificationContract } from './calendarNotificationContract';
 
+import { localNotificationReconcileQueue } from './localNotificationReconcileQueue';
+
 export const MAX_COORDINATED_PASSES = 16;
 
 export type CoordinatedReconcileInput = {
@@ -44,20 +46,28 @@ export async function runCoordinatedReconcile(
 ): Promise<ReconcileResult | null> {
   let last: ReconcileResult | null = null;
   for (let pass = 0; pass < MAX_COORDINATED_PASSES; pass += 1) {
-    const state = input.getState();
-    if (state.phase !== 'ready') return last;
-    const revisionAtStart = input.getRevision();
-    last = await reconcileCalendarNotifications({
-      events: state.events,
-      registry: state.registry,
-      now: input.clock ? input.clock() : input.now,
-      clock: input.clock,
-      timeZone: input.timeZone(),
-      os: input.os,
-      persistRegistry: input.persistRegistry,
-      maxPending: input.maxPending,
-      shouldAbort: () => input.getRevision() !== revisionAtStart,
+    const completed = await localNotificationReconcileQueue.run(async () => {
+      // Capture only after acquiring the full-pass queue: another queued pass or
+      // domain mutation may have changed state while this job was waiting.
+      const state = input.getState();
+      if (state.phase !== 'ready') return null;
+      const revisionAtStart = input.getRevision();
+      const result = await reconcileCalendarNotifications({
+        events: state.events,
+        registry: state.registry,
+        now: input.clock ? input.clock() : input.now,
+        clock: input.clock,
+        timeZone: input.timeZone(),
+        os: input.os,
+        persistRegistry: input.persistRegistry,
+        maxPending: input.maxPending,
+        shouldAbort: () => input.getRevision() !== revisionAtStart,
+      });
+      return { result, revisionAtStart };
     });
+    if (completed === null) return last;
+    const { revisionAtStart } = completed;
+    last = completed.result;
     if (input.onResult) input.onResult(last);
     if (input.getRevision() === revisionAtStart) break;
   }

@@ -17,7 +17,9 @@
  *   family, where the native interval is computed after the JS call.
  * - Capacity is consumed the moment `os.schedule` succeeds — a subsequent
  *   inventory readback failure does not free the slot, so a verification
- *   failure can never make the pass exceed `maxPending`.
+ *   failure can never make the pass exceed `maxPending`. Ambiguous rejection
+ *   requires an immediate native re-list before allocating another slot; a failed
+ *   re-list stops scheduling with a retryable error.
  * - A fresh clock is consulted immediately AFTER the registry persist and
  *   BEFORE the OS schedule call; a trigger that became past during the persist
  *   is skipped (durable registry corrected) and never fires as an immediate
@@ -59,7 +61,9 @@ import {
   type PendingNotification,
 } from './calendarNotificationContract';
 
-export const DEFAULT_MAX_PENDING = 48;
+import { createLocalNotificationScheduleSafety, DEFAULT_MAX_PENDING } from './localNotificationScheduleSafety';
+
+export { DEFAULT_MAX_PENDING } from './localNotificationScheduleSafety';
 
 export type ReconcileResult = {
   status: 'ok' | 'error' | 'aborted';
@@ -372,20 +376,21 @@ export async function reconcileCalendarNotifications(
     );
   }
   if (shouldAbort()) return abortedResult([...records.values()], scheduled, cancelled, unschedulable);
-  const postById = new Map(postPending.map((p) => [p.identifier, p]));
-  const capacityAvailable = Math.max(0, maxPending - postPending.length);
+  const safety = createLocalNotificationScheduleSafety({
+    pending: postPending,
+    maxPending,
+    listPending: () => os.listPending(),
+    schedule: (request: CalendarNotificationRequest) => os.schedule(request),
+    matches: pendingMatchesRequest,
+    shouldAbort,
+  });
 
   // 7. PHASE C — schedule missing in-window desired requests. A fresh clock is
   // consulted immediately before each schedule decision: never schedule a
   // trigger that has become past while reconciliation was running.
-  let slotsUsed = 0;
   for (const req of desired) {
     if (shouldAbort()) return abortedResult([...records.values()], scheduled, cancelled, unschedulable);
-    // A slot is consumed the moment a schedule SUCCEEDS — regardless of the
-    // later readback outcome — so a verification failure right after a
-    // successful schedule can never let this pass exceed the configured cap.
-    if (slotsUsed >= capacityAvailable) break;
-    const existing = postById.get(req.id);
+    const existing = safety.find(req.id);
     if (existing) {
       if (!pendingMatchesRequest(existing, req)) {
         // Should have been cancelled in Phase A; if it still exists, surface.
@@ -393,6 +398,7 @@ export async function reconcileCalendarNotifications(
       }
       continue;
     }
+    if (!safety.hasCapacity()) break;
     if (req.triggerAt <= clock().getTime()) {
       skippedStale += 1; // became past mid-reconcile: do not schedule
       continue;
@@ -414,24 +420,21 @@ export async function reconcileCalendarNotifications(
       skippedStale += 1;
       continue;
     }
-    try {
-      const returned = await os.schedule(req);
-      slotsUsed += 1; // capacity consumed by the successful schedule
-      if (shouldAbort()) return abortedResult([...records.values()], scheduled, cancelled, unschedulable);
-      if (returned !== req.id) throw new Error('id-mismatch');
-      // Read-back verification uses the SAME full matcher as existing pending
-      // notifications: identifier alone is NOT enough — ownership, content and
-      // the trigger instant must match the request we just scheduled.
-      const after = await os.listPending();
-      if (shouldAbort()) return abortedResult([...records.values()], scheduled, cancelled, unschedulable);
-      const verified = after.find((p) => p.identifier === req.id);
-      if (verified === undefined || !pendingMatchesRequest(verified, req)) {
-        throw new Error('schedule-not-verified');
-      }
-      scheduled.push(req.id);
-    } catch {
-      errors.push(`schedule-failed:${req.id}`);
+    const outcome = await safety.schedule(req);
+    if (outcome === 'aborted') {
+      return abortedResult([...records.values()], scheduled, cancelled, unschedulable);
     }
+    if (outcome === 'inventory-error') {
+      // The native side effect is unknown. Never continue with cached capacity,
+      // or let a later cleanup read hide this failure and free speculative slots.
+      return errorResult(
+        'Не удалось проверить запланированные уведомления. Повторите попытку.',
+        [...records.values()], scheduled, cancelled, unschedulable,
+      );
+    }
+    if (outcome === 'capacity') break;
+    if (outcome === 'verified') scheduled.push(req.id);
+    else errors.push(`${outcome}:${req.id}`);
   }
   if (shouldAbort()) return abortedResult([...records.values()], scheduled, cancelled, unschedulable);
 

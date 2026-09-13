@@ -1745,4 +1745,118 @@ non-Finance baseline tests are unchanged; no protected feature or dependency was
 Scope scans found no Finance native notification integration, HTTP or browser storage.
 
 Slice 6B and Slice 7 have not started. Native/iPhone acceptance remains PENDING.
+
+### Slice 6B.1 — shared notification safety implemented; independent review pending
+
+Baseline checkpoint: `5a5486b4106b52e5372ba52e810d88ca01d2c629`.
+Before production edits, `npm test` passed 472/472. The only existing dirty file
+was the approved `tasks/current-task.md` brief; it is preserved. Protected source
+hashes were captured in `/tmp/workazy-6b1-protected.sha256` for diff comparison.
+
+Decision: add a neutral full-pass FIFO queue and a neutral inventory/schedule safety
+primitive; wire the existing Calendar coordinator/reconciler to these primitives.
+Keep the existing single Expo adapter and permissions unchanged: neither needs
+extraction to fix this safety boundary. Finance can consume the neutral primitives
+in 6B.2; no Finance notification runtime, registry, planner, UI or routing is added.
+Ambiguous schedule rejection requires an immediate authoritative inventory read;
+failed read stops scheduling. Calendar schema, ownership and domain semantics stay
+protected.
+
+#### Production changes and protected behavior
+
+- `src/services/notifications/localNotificationReconcileQueue.ts`: a shared process-level
+  FIFO instance plus an injectable factory. A job covers the complete reconciliation
+  pass, including permission/inventory reads, cancellation, re-list, scheduling,
+  readback and registry writes. Rejection releases the queue; unresolved native work
+  keeps it occupied. No per-call locking or nested acquisition.
+- `calendarReconcileCoordinator.ts`: each existing pass enters that queue and only
+  then captures current events/registry/revision/clock/timezone. The existing
+  16-pass stale-revision loop releases the queue between passes, preserving reruns
+  without preventing another queued caller from progressing.
+- `localNotificationScheduleSafety.ts`: neutral injected request/inventory primitive,
+  shared cap 48, no Calendar ownership/planning or Expo dependency. Successful calls
+  consume a slot before readback. BOTH success and rejection lead to a native
+  inventory read; the new list replaces capacity accounting rather than extending
+  a stale counter. A rejected call may already have inserted its request. Only a
+  successful re-read permits further scheduling; failed read leaves the session
+  blocked and returns `inventory-error`. Typed outcomes distinguish capacity,
+  schedule error, verification error, inventory error and stale abort. A native
+  schedule error remains an error even if subsequent inventory confirms insertion.
+- `calendarNotificationReconciler.ts`: its scheduling phase uses the safety primitive
+  instead of the former success counter/catch-and-continue path. Failed readback
+  exits with existing retryable error semantics, never speculative capacity. The
+  prior post-cancellation re-list remains; failed/still-present cancellations do
+  not free slots. Registry writes still precede scheduling and never imply native
+  existence. Full native matcher, fingerprints, IDs, ownership, tombstones,
+  start/advance planning, permissions and DST rules are unchanged.
+
+Only TWO existing Calendar production files changed: coordinator (whole-pass queue)
+and reconciler (ambiguous-schedule/capacity safety). The existing Expo adapter,
+Calendar contract/planner/store/schema/controller/lifecycle/Screen, all Finance core
+files, all other feature code and all existing tests are unchanged. Protected-file
+hash comparison identified only those two expected differences. No package changes,
+README changes, permission redesign or new prompt. The approved task brief was
+already dirty and was not modified during implementation.
+
+#### Regression evidence
+
+`tests/local-notification-safety.test.mjs` adds **16 production-path tests**. They use
+real Calendar coordinator/reconciler and the shared safety/queue with one injected
+native inventory, clocks and deterministic gates. They cover:
+
+- 47 foreign requests + native inserts A then rejects: recovery reads 48; B is never
+  scheduled, foreign requests survive and peak/final occupancy is at most 48.
+- Throw before insertion: recovery still reads inventory before B safely consumes
+  the one available slot. Success with failed list/content verification and ambiguous
+  rejection with failed recovery read never create request 49; errors stay visible.
+- 48 occupied slots; cancellation confirmed absent vs cancellation resolving while
+  still present vs throwing. Only observed native absence permits refill.
+- Two independent production coordinator jobs paused inside list, schedule or cancel:
+  enqueue B AFTER A reaches its gate, prove B has not entered OS work, release A,
+  verify serialization and bounded occupancy. A generic FIFO/rejection test verifies
+  that a failed job cannot poison later jobs.
+- Queued snapshot freshness, deletion during native schedule with latest-state rerun,
+  and restart/registry-loss recovery after ambiguous insertion/read failure.
+
+The exact ambiguous-insertion regression was also run against the ORIGINAL checkpoint
+Calendar reconciler (temporarily restored, then restored to the implementation in a
+`finally` block). It failed as required; the old loop attempted both A and B and lost
+its capacity-limited state. The normal suite subsequently ran on the restored fixed
+implementation in all three requested timezones. Existing 472 cases were not edited
+or weakened; 362 pre-Finance and 110 Finance baseline cases remain present and green.
+
+#### Verification — actual results
+
+| Check | Result |
+| --- | --- |
+| Baseline `npm test` before changes | 472 passed / 0 failed |
+| Implemented `npm test` | **488 passed / 0 failed: 472 baseline + 16 new** |
+| `TZ=Europe/Kyiv npm test` | 488 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 488 passed / 0 failed |
+| `TZ=UTC npm test` | 488 passed / 0 failed |
+| `npm run typecheck` | passed |
+| `npm run lint` | passed |
+| `npx eslint .` | 0 errors; same 3 pre-existing Calendar test warnings |
+| `npx expo install --check` | Dependencies up to date; network-enabled rerun passed |
+| `npx expo-doctor` | Initial sandbox invocation failed with DNS/ENOTFOUND; authorized network-enabled `npx --yes expo-doctor` passed **21/21** |
+| `npm run export:ios` | passed; exported to `dist` |
+| root `npm run build` | passed; sites artifact verified |
+| Runtime/security/scope scans | New runtime helpers contain no Expo import, HTTP, browser storage, Telegram, Finance ownership/runtime or secrets; existing production reconciliation entry point goes through shared coordinator; existing tests and protected feature files unchanged |
+| `git diff --check` | passed |
+
+The first dependency check used Expo's offline map and warned that validation was
+unreliable offline. The network-enabled rerun removed that limitation. Verification
+logs and the mutation result are under `/tmp/workazy-6b1-*.log` for this session;
+they are not committed artifacts.
+
+**Slice 6B.2 has NOT started.** Finance still stores reminder intent only: no Finance
+notification registry, planner, IDs scheduled, permission actions, lifecycle, taps or
+reminder UI. Its existing deferral/wiring regression remains unchanged and passes.
+Before 6B.2 starts, this 6B.1 implementation requires independent Codex review and
+explicit REVIEW_OK; test success is not that approval. No Slice 7, server/Telegram,
+Finance sync, bank integration, deployment or commit.
+
+**Native/iPhone delivery acceptance remains PENDING.** These tests/export do not prove
+OS delivery, native trigger timing, permission presentation, cancellation on device
+or lock-screen/tap behavior. Existing device acceptance obligations remain pending.
 A separate review is still required; passing tests/export does not constitute REVIEW_OK.

@@ -1,289 +1,305 @@
-# Slice 6 — Finance: product and architecture brief
+# Slice 6B — Finance local notification architecture brief
 
-Prepared 2026-09-12. **Architecture only; Finance is NOT implemented by this task.** This brief replaces the completed Slice 5 implementation brief. Slice 5 review ended REVIEW_OK; native acceptance remains pending. The reviewed mobile baseline has 362 tests (223 Slices 1–4 + 139 media). Those are prior verification results, not new Finance results.
+Prepared 2026-09-13. **Architecture only. Slice 6B is not implemented by this task.** The starting worktree was clean and HEAD was verified as `5a5486b4106b52e5372ba52e810d88ca01d2c629`. The user identifies this checkpoint as Slice 6A REVIEW_OK. Its recorded baseline is 472 passing tests; that suite was not rerun for this documentation task. iPhone/native acceptance remains pending. This revision addresses the architecture review only; the brief was already modified when this revision task began. Implementation is split into 6B.1 and 6B.2, with independent Codex REVIEW_OK required between them.
 
-The user authorizes a broader, bounded Finance product and this document only. Do not change MASTER_PROMPT.md, tasks/mobile-migration.md, mobile production code or existing web/backend contracts during preparation. A later implementation task executes this brief, implements Slice 6 only and stops before Slice 7.
+This document replaces the earlier Slice 6 brief. The protected Finance core contract and its implementation remain available at the checkpoint, including `git show 5a5486b4106b52e5372ba52e810d88ca01d2c629:tasks/current-task.md`. No Finance money, allowance, migration or persistence contract is superseded here. MASTER_PROMPT.md and tasks/mobile-migration.md already support local reminders and isolated reconciliation under shared capacity; no amendment is needed.
 
-## 1. Existing implementation audit and compatibility boundary
+## 1. Current implementation audit
 
-| Evidence | Existing behavior | Native decision |
-| --- | --- | --- |
-| `lib/types.ts:98–135` | SalarySchedule: id, dayOfMonth, amount, title, createdAt, updatedAt. FinanceExpense: id, date, amount, optional note, createdAt. FinanceObligation: debt/purchase, title, amount, optional dueDate/reminderTime, completed, timestamps. FinanceState: balance, salarySchedules, expenses, obligations, optional updatedAt. Amounts are major-unit numbers; no currency setting or income transactions. | Preserve named concepts and identifiers in explicit native equivalents; add income and optional metadata without reinterpreting debt as receivable. Do not change root types. |
-| `app/finance-screen.tsx` | Budget/obligations sections; hardcoded UAH; balance adjustment, expense add/delete, monthly salary add/delete, obligation add/toggle/delete and month grid. No expense editing or actual income receipt. Salary calendar rows are expectations, not deposits. Completing an obligation does not change balance. | One Finance tab with Overview / Operations / Obligations; actual income separate from expected income; retain status-only completion semantics. |
-| `app/finance-screen.tsx` + `lib/finance.ts` | Expense subtracts from balance, clamps at zero; deletion refunds the whole amount. `dailyBudget(balance,nextDate,today)` is recomputed from that changed balance. This violates the fixed-allowance product rule and can inflate balance after deleting a previously clamped expense. | Do not copy these defects. Signed balance, exact integer arithmetic, explicit operation deltas, separately persisted daily allowance. |
-| `lib/finance.ts` | Next salary strictly after today, current/next month, monthly day clamps to month end; zero salary amounts allowed. `daysUntil` rounds elapsed milliseconds; constructors have JS years 0–99 pitfalls. Normalizer drops malformed rows and substitutes empty/zero values. | Reuse monthly concept and clamp policy, not these runtime helpers. Strict native dates/parser; no destructive normalization. Handle expected income today explicitly. |
-| `lib/planner-storage.ts` | Web localStorage `personal-planner-v1` contains optional finances inside the planner snapshot. | Not a native key and not accessible automatically from native. No browser storage dependency. |
-| `lib/planner-api.ts` | Finance travels through whole-state sync; preferredFinanceState selects an entire local/server finance snapshot using content and updatedAt, not transaction merge. | Do not reuse that merge for the new native model; no cloud sync in Slice 6. |
-| `app/api/v1/state/route.ts:184–235,248–281` | GET reads D1 settings key `planner-finance-state`. PUT parses known finance fields and upserts JSON; omitted finances leaves it unchanged. Enum only debt/purchase; nonnegative balance; title/note limits; additional native fields are not preserved by this parser. | A V1 native envelope is NOT round-trip compatible with this API. Never send it to the old endpoint or strip fields to make it fit. Future sync requires version negotiation and explicit migration. |
-| `lib/reminder-scheduler.ts` and reminder routes/Telegram delivery | Existing obligation reminder uses due date, reminder time or default 09:00; skips completed. Web delivery text assumes UAH and debt/purchase. Existing tests include Kyiv wall-clock conversion and server-state access. | Reuse due-date meaning and 09:00 default only. Native device-zone local scheduling; no server reminder routes or Telegram import. |
-| `tests/finance.test.mjs` | Five tests cover helper budget division, month-end salary clamp, permissive normalization and source wiring. They do not protect fixed allowance through expense CRUD. | Keep root tests unchanged; new native production-path tests must prove that invariant. |
-| `mobile/src/features/finance/FinanceScreen.tsx` | Shell only. No native Finance domain/store/storage version exists. | First native Finance schema is V1; do not invent a prior installed native Finance migration. |
-| Native Calendar notification modules and lifecycle | Root-mounted lifecycle; permission/read/retry flow; latest-revision reconciliation; persisted registry; native pending-list verification; deterministic Calendar namespace; total pending policy 48 including unrelated requests; DST gap/fold handling. | Reuse contracts/policies via narrow extraction and a shared OS queue, not two racing standalone schedulers. Preserve Calendar IDs, storage and user-visible reminder semantics. |
+The architecture is based on the current source, the seven requested source-of-truth documents, and the Calendar and Finance tests, rather than the older illustrative architecture examples.
 
-Also inspected MASTER_PROMPT.md, AGENTS.mobile.md, MOBILE_ARCHITECTURE.md, DESIGN_SYSTEM.md, tasks/mobile-migration.md and mobile/MIGRATION_STATUS.md. Architecture examples in older documents are illustrative: current native local storage and notification implementations are the concrete baseline. Finance requires no backend credentials or external service.
+| Current component | Actual behavior and boundary to preserve |
+| --- | --- |
+| `services/notifications/expoCalendarNotifications.ts` | The Expo-facing notification boundary. Maps permissions, lists/decodes pending requests, schedules deterministic DATE requests, cancels individual IDs and installs the foreground handler. Writes Calendar ownership, fingerprint, `targetTriggerAt` and JS `scheduledAt` into data. No response/tap handler. |
+| `calendarNotificationContract.ts` | Calendar request type, namespace/owner and ID helpers; pending request and permission types; trigger decoding/classification. Existing Calendar ownership recognizes its ID prefix OR owner metadata. Do not silently tighten or rename this existing contract during extraction. |
+| `calendarNotificationPlanner.ts` | Timed event always produces a future `start`; recognized optional advance produces an additional alert. Untimed/past triggers produce none. Sorts by instant, event ID, kind. Body contains event title/time, never note. DST conversion uses `zonedDateTimeToUtcEarlier`. |
+| `calendarNotificationReconciler.ts` | Reads permission without prompting; lists inventory, preserves foreign requests, clears obsolete/changed/out-of-window owned requests, re-lists before allocating capacity, schedules with durable registry bookkeeping and fresh-clock/revision checks, verifies native content/trigger, and recovers owned orphans. Intended total cap is 48. A successful schedule consumes capacity even if readback fails, but an ambiguous schedule rejection currently leaves capacity accounting stale; the narrow safety correction below is required. |
+| Calendar verification | Matcher checks ownership fields, fingerprint, actual title/body and decodable trigger. Callers locate the deterministic ID. A present persisted target adds an exact constraint; metadata is not native proof. Absolute trigger tolerance is 2,000 ms; iOS interval uses the existing 30,000 ms handoff budget and `scheduledAt` decoding context. Unknown shapes fail. These are current adapter policies, not observed device guarantees. |
+| Calendar registry | `CalendarNotificationRecord` contains ID, eventId, start/advance kind, fingerprint, scheduled/tombstone status and timestamps. It lives WITH events in `workazy-native-calendar-v1`, version 1. Current code prewrites a record labelled `scheduled` before the OS call: that label alone cannot establish native success. Preserve current schema and cancellation/tombstone protocol; do not migrate it to the new Finance registry. |
+| `calendarStore.ts` / `calendarStorage.ts` | Hydration gate, strict whole-snapshot validation, persist before publication, synchronous write lock. `setRegistry` merges into current committed events. Event revision changes on hydration/CRUD, not registry writes. Registry persistence can return busy/error. |
+| `calendarReconcileCoordinator.ts` | Captures event revision, supplies `shouldAbort`, and reruns against current state, bounded to 16 passes. There is no process-wide Calendar/Finance exclusion. |
+| `calendarNotificationController.ts` | Per-Calendar coalesced reconcile flight, today marker, active-only ticks, focus/foreground and permission refresh. Delayed permission results merge into latest controller state. Explicit permission request currently has no cross-domain single-flight guard. |
+| `useCalendarLifecycle.ts` / `CalendarScreen.tsx` | Root mounts lifecycle once: foreground handler, Calendar hydration, one notification AppState listener and 60-second active refresh. Screen focus retries; committed CRUD awaits Calendar reconciliation. Permission banners, Settings, quiet/provisional, capacity, retry and DST warnings already exist. Preserve these behaviors and sheet guards. |
+| Root `mobile/app/_layout.tsx` | Mounts Calendar lifecycle, theme and Stack. Current source has no notification-response listener or cold-start tap dispatcher. Do not claim an existing Calendar event-opening tap flow. |
+| Finance types/model/store/storage | Four obligation kinds; optional dueDate/time, explicit `reminderEnabled`, completed/completedAt. `workazy-native-finance-v1` is the existing flattened V1 envelope with monotonic committed revision. Parser, aggregate checks, deep freezing, write gate and allowance-first commands are protected. No Finance OS registry or scheduling exists. |
+| Finance UI/binding | `useFinanceStore.ts` creates the store singleton; FinanceScreen hydrates on mount and uses sheet identity/opening-revision guards. Obligation form defaults reminder OFF, suggests 09:00, validates date/time, and displays deferred Slice 6B copy. Obligations list currently displays intent, not native scheduling status. |
+| Existing tests | Calendar notifications/controller/coordinator/store/model/date/sheet tests cover native matching, capacity, stale passes, persistence, DST and lifecycle. Finance money/model/store/legacy/fixes/fixes2/wiring tests protect the 6A core. Some wiring assertions deliberately describe the temporary absence of 6B; see §13 for their bounded replacement. |
 
-## 2. Product decisions and explicit exclusions
+**Confirmed safety defect to correct in 6B.1:** with 47 foreign pending requests, the current Calendar reconciler can schedule A, have the native side create A before the promise rejects, then blindly schedule B because its local success counter did not advance. The review reproduction reached 49 pending. Serializing complete passes does not fix this within-pass overflow. Both domains must use the authoritative-inventory recovery protocol in §5; changing Calendar's ambiguous-schedule/capacity handling is explicitly authorized, while its other behavior remains protected.
 
-Finance answers four questions: **what is available, today's fixed limit, today's expenses, and what comes next?** It is a personal planner with money tracking, not a bank or accounting package.
+Two compatibility decisions follow from the actual code:
 
-- One primary currency for the complete Finance dataset: UAH, USD, EUR or PLN, all two decimal places. First Finance setup asks currency (UAH suggested), current balance and limit mode. Setup stays inside Finance; no Settings tab/Slice 7 expansion.
-- Available means the user's tracked current balance, including recorded receipts/expenses and explicit balance corrections. It excludes expected income, receivables and planned obligations. Label “Доступно” with help “По вашим записям; будущие платежи не вычтены”. No claim that this is a bank balance or financial recommendation.
-- Expenses may make balance negative. Show the deficit honestly; never clamp or discard it. Expected income never increases available money automatically.
-- Daily limit mode is AUTO or MANUAL; today's saved allowance is independent of subsequent transaction changes. Exact policy below.
-- Keep `SalarySchedule` internally as monthly expected income, present “Доходы”, “Регулярный доход” and user-supplied titles. Salary, advance, freelance, scholarship/benefit, side income and other are optional labels, not separate accounting systems. Add one-time expectations and actual income entries.
-- Optional expense category: food, transport, home, health, entertainment, shopping, other. Absence is distinct from “other”. No mandatory category or category setup screen. Income has an optional source label instead.
-- Obligations: payment, debt I owe, money owed to me, planned purchase. Totals by direction/type; never subtract receivables from what the user owes to present a misleading net number.
-- No bank/Monobank integration, card/account sync, multiple wallets, FX, investments, taxes, accounting ledger, budgets by category, shared/family accounts, complex reports, upload, cloud Finance sync, Telegram, push backend, subscription billing engine, debt interest, partial repayments, recurring obligation generation or import/export UI in Slice 6.
-- Monthly expected-income repetition plus one-time expectations is sufficient for v1. Weekly/biweekly rules are deferred; users may enter one-time dates. No automatic posting, automatic payment or income reminder in this slice.
+- **Completion disables intent today.** `setObligationCompleted(true)` sets `reminderEnabled=false`, retaining dueDate/time; the existing model test asserts this. Keep that behavior. Reopening alone therefore remains OFF. Reopening schedules only a row whose reminder is still explicitly configured: for example, the user edits a completed row to enable its reminder, then reopens it. A completed row never schedules. Do not infer enabled intent from a retained time or registry record. Tests must cover both the ordinary OFF reopen and configured future/past reopen.
+- **Calendar tap routing is absent today.** Preserve its existing OS/default app-opening behavior and do not redirect Calendar payloads to Finance. A new Calendar event-opening feature is outside this brief. The requested Calendar tap regression means preservation of that audited baseline, not an invented existing route.
 
-## 3. Exact native domain model
+## 2. Product contract
 
-Use `mobile/src/types/finance.ts`; no imports from root web runtime. The following is the persisted native contract, not the old API DTO. Optional means absent, not null, unless null is explicitly shown. All collections are immutable after publication.
+One local notification, kind `due`, for any of payment/debt/receivable/purchase, only when the committed obligation is incomplete, reminderEnabled is true, dueDate/time exist and the converted instant is future. Default OFF, time suggestion 09:00. No advance, repetition, income reminder or server delivery.
+
+- Removing dueDate must visibly turn OFF reminder intent and clear reminderTime in the SAME submitted Finance edit. Explain this next to the field; do not silently keep enabled intent or make the user discover it through a validation failure.
+- Completing/deleting persists Finance first. Subsequent notification cancellation is independent and retryable. Reopen follows §1. Editing date, time, enabled state or title invalidates the desired request and triggers reconciliation.
+- Saved obligations remain editable under notification failure. Domain save success closes only its own sheet, with existing guards; it must not be reported as a failed Finance save because reconciliation failed.
+- Completion remains status-only. Scheduling, firing, tapping, cancelling and retrying never create expenses/incomes, change balance or rewrite an allowance. No CalendarEvent is created.
+- Title `Workazy`; body `Финансовое напоминание · <title>`. Do not add amount, note or debt direction to content OR notification data. The user's own title may disclose information; retain the visible lock-screen warning. Do not mutate or truncate stored legacy titles to accommodate notifications; native content rejection is a reminder error.
+
+## 3. Component boundaries and adapter choice
+
+Choose **B: extract `expoLocalNotifications.ts`, retain a compatible `expoCalendarNotifications.ts` facade**. This keeps Calendar callers and tests stable while one module owns all Expo notification operations. No new dependency is planned.
+
+Neutral pieces:
+
+1. `localNotificationContract.ts`: existing normalized pending request, permission, trigger decoder/classifier, target key and tolerance constants, plus a low-level schedule request `{id, triggerAt, title, body, data}`. Move existing decoding logic without changing its semantics; re-export old public names from the Calendar contract where necessary.
+2. `expoLocalNotifications.ts`: sole `expo-notifications` import; permission mapping/read/request, list, DATE schedule, individual cancel, foreground handler and response subscription/last-response read. Preserve current Calendar payload bytes/fields and foreground presentation. Stamp JS `scheduledAt` immediately before scheduling, as today; never claim it is a native timestamp.
+3. `localNotificationReconcileQueue.ts`: one process-level FIFO queue for complete passes. Factory with injected jobs for tests; a single shared production instance. `localNotificationScheduleSafety.ts` supplies the shared pass-scoped inventory/capacity and ambiguous-schedule protocol (§5); both Calendar and Finance must consume it.
+4. `notificationPermissionCoordinator.ts`: shared explicit-request single flight and permission publication, separate from the inventory queue.
+5. `useLocalNotificationLifecycle.ts` and `notificationResponseRouter.ts`: root fanout and owner dispatch. No generic notification plugin framework.
+
+Calendar-specific pieces remain: event types/storage, ownership/ID/payload conversion, body/fingerprint, start/advance planner, reconciler, registry, revision coordinator, controller results and UI. Its reconciler gets only the explicit scheduling/capacity safety adaptation in §5, not a generic rewrite. Finance adds its own obligation planner, ownership/matcher, reconciler, separate registry and controller. Finance must not call the Calendar planner with fabricated events or reuse its event registry.
+
+Calendar facade adapts its current request to the neutral schedule request with the identical Calendar data fields. Finance contract builds its own data. Both delegate to the same native adapter. The adapter does NOT acquire the reconciliation queue: that would deadlock callers already inside a pass. Permission and response reads are not scheduling passes.
+
+## 4. Finance identity, payload and persistent registry
+
+Namespace `workazy.finance.v1`; owner `workazy-finance-v1`; deterministic ID `workazy.finance.v1:<obligationId>:due`. Preserve obligation IDs verbatim, including legacy IDs. Construct the canonical ID from payload fields; do not recover arbitrary obligation IDs by splitting on every colon.
+
+Finance ownership requires the Finance owner, nonempty obligationId, kind exactly `due`, and identifier equal to that canonical Finance ID. A Calendar ID, conflicting owner, malformed identity or namespace-only match is not Finance-owned and must not authorize cancellation. Unknown requests still count toward capacity. This is an app bookkeeping/routing check, not authentication of an external sender. Calendar's existing predicate and emitted payload remain unchanged; Finance must never emit Calendar owner/event fields.
+
+Payload fields: `{owner, obligationId, kind:'due', fingerprint, targetTriggerAt, scheduledAt}`. Both times are finite epoch milliseconds; target is the intended instant and scheduledAt is adapter call context. Use a deterministic unambiguous fingerprint over kind, dueDate/time, resolved trigger, exact title and body, for example a JSON tuple; money and notes are excluded. For tap validation, ownership/identity is required but an old fingerprint does not prevent opening a live edited obligation.
+
+Proposed separate strict schema under **`workazy-native-finance-notifications-v1`**, version **1**:
 
 ```ts
-type CurrencyCode = 'UAH' | 'USD' | 'EUR' | 'PLN';
-type IncomeSource = 'salary' | 'advance' | 'freelance' | 'benefit' | 'side' | 'other';
-type ExpenseCategory = 'food' | 'transport' | 'home' | 'health' | 'entertainment' | 'shopping' | 'other';
-type LocalDate = string; // strictly valid Gregorian YYYY-MM-DD, 0001–9999
-type Instant = string;   // canonical UTC ISO timestamp using existing native policy
-type Minor = number;     // safe integer minor units; no binary floating point money math
-
-type SalarySchedule = {
-  id: string; title: string; dayOfMonth: number; amountMinor: Minor;
-  source?: IncomeSource; active: boolean;
-  createdAt: Instant; updatedAt: Instant;
+type FinanceNotificationRecord = {
+  id: string;                 // canonical namespace:obligationId:due
+  obligationId: string;
+  kind: 'due';
+  fingerprint: string;
+  targetTriggerAt: number;     // finite intended epoch milliseconds
+  status: 'pending' | 'scheduled' | 'tombstone';
+  scheduledAt?: number;       // observed adapter context; not native proof
+  verifiedAt?: string;        // ISO instant of successful full inventory check
+  createdAt: string;
+  updatedAt: string;
 };
-type PlannedIncome = {
-  id: string; title: string; date: LocalDate; amountMinor: Minor;
-  source?: IncomeSource; createdAt: Instant; updatedAt: Instant;
-};
-type IncomeExpectationRef =
-  | { kind: 'monthly'; scheduleId: string; date: LocalDate }
-  | { kind: 'once'; plannedIncomeId: string; date: LocalDate };
-type IncomeResolution = {
-  ref: IncomeExpectationRef; state: 'received' | 'skipped';
-  incomeId?: string; // present iff received; points to one existing FinanceIncome
-};
-type FinanceExpense = {
-  id: string; date: LocalDate; amountMinor: Minor; note?: string;
-  category?: ExpenseCategory; createdAt: Instant; updatedAt?: Instant;
-  balancePolicy: 'applied' | 'legacy-history';
-};
-type FinanceIncome = {
-  id: string; date: LocalDate; amountMinor: Minor; note?: string;
-  source?: IncomeSource; createdAt: Instant; updatedAt: Instant;
-  expectation?: IncomeExpectationRef;
-};
-type FinanceObligation = {
-  id: string; kind: 'debt' | 'purchase' | 'payment' | 'receivable';
-  title: string; amountMinor: Minor; dueDate?: LocalDate;
-  reminderTime?: string; // HH:mm; absence = reminders off; requires dueDate
-  completed: boolean; createdAt: Instant; updatedAt: Instant;
-};
-type DailyAllowance = {
-  date: LocalDate; revision: number; mode: 'auto' | 'manual'; amountMinor: Minor;
-  capturedAt: Instant; baseBalanceMinor: Minor;
-  horizonDate?: LocalDate; dayCount?: number; // required only in auto mode
-  reason: 'day-open' | 'explicit-change';
-};
-type FinanceState = {
-  currency: CurrencyCode;
-  balanceMinor: Minor; balanceUpdatedAt: Instant;
-  limit: { mode: 'auto' | 'manual'; manualMinor: Minor; fallbackEndDate?: LocalDate };
-  salarySchedules: SalarySchedule[]; plannedIncomes: PlannedIncome[];
-  expenses: FinanceExpense[]; incomes: FinanceIncome[];
-  incomeResolutions: IncomeResolution[];
-  obligations: FinanceObligation[]; allowances: DailyAllowance[];
-  updatedAt: Instant;
-};
-type FinanceEnvelopeV1 = {
-  version: 1; initialized: boolean; state: FinanceState; savedAt: Instant;
+type FinanceNotificationSnapshotV1 = {
+  version: 1;
+  records: readonly FinanceNotificationRecord[];
+  savedAt: string;
 };
 ```
 
-Empty initialized=false state has UAH, zero balance/manualMinor, auto mode and empty arrays; first setup commits initialized=true atomically. Empty defaults are created only for an absent key, not corrupt bytes. Fresh IDs use the existing native UUID facility. Require uniqueness within each entity collection (matching the legacy contract), not across different legacy collections. Legacy IDs are retained; reference keys and mixed-list React keys include entity type plus ID, so a salary and expense sharing an old ID cannot collide. Resolution uniqueness is by monthly scheduleId+date or once plannedIncomeId; one-time date changes update the reference only while unresolved. IDs are stable through edits.
+`pending` is durable pre-schedule intent; `scheduled` records a successful full verification and requires scheduledAt/verifiedAt; `tombstone` means cancellation still needs durable confirmation. Clear old verification when replacing a target. Tombstones may retain earlier context. Store no amount/note/content copy; derive current content from the Finance domain. A fingerprint can contain the title and is local metadata, never telemetry.
 
-Constraints: safe integers, absolute money and every checked aggregate <= Number.MAX_SAFE_INTEGER; amounts for operations/obligations >0; expected amounts >=0 (legacy zero preserved, but zero expectations do not form AUTO horizon); manual limit >=0. Reject overflow before writes. Parse input decimal strings (comma or dot decimal, max two fractional digits, no exponent/Infinity); convert with integer arithmetic. Reject extra decimals rather than round new entries. Never perform arithmetic on formatted strings. Selected currencies have minor scale 100; no floating-point exchange conversion.
+Validate full envelope before write/publication: exact types/keys, timestamps, unique canonical IDs, due kind, finite supported targets/context, and status-specific fields. Publish immutable snapshots, serialize registry writes with their own gate, and keep committed registry unchanged on write failure. Notification registry writes never touch Finance revision or its envelope. Calendar V1 is untouched.
 
-Titles required for expectations/obligations. New/changed titles <=200 characters; notes <=2,000. Hydration/migration must preserve valid legacy longer text; use per-field changed flags, do not apply form caps to untouched legacy values. Preserve whitespace/optional presence in stored imported text; trim only newly edited values. Date/time and unknown enum/key failures are explicit; do not silently map an unknown kind to debt/other.
+An absent key means empty registry: inspect OS and adopt fully matching Finance-owned requests or cancel obsolete positively owned requests. A corrupt/unknown-version/read-failed registry is a notification load-error: preserve original bytes, block Finance OS mutations and registry replacement, offer retry. A successful inventory read may explain what exists but does not authorize overwriting corrupt storage. Missing-registry recovery and corruption are distinct. No automatic reset/salvage UI in 6B; persistent corruption remains an honest blocked reminder state while Finance CRUD works. A corrupt/unhydrated Finance DOMAIN also blocks Finance reconciliation; never treat unknown obligations as an empty desired set and delete their reminders.
 
-Currency belongs to Finance state, not every row. It may change only before data exists (zero balance, all entity/resolution/allowance arrays empty). After first saved data it is locked; explain that changing symbols would relabel history, not convert money. No reset/delete-all escape hatch in this slice. Future currency migration requires a separate decision.
+## 5. Global queue, capacity and fairness
 
-## 4. Balance and operation semantics
+All production Calendar and Finance reconciliation entry points use the SAME singleton queue, including focus, CRUD, retries and lifecycle. Enqueue a callback, not a previously captured snapshot. Inside the callback read latest hydrated domain/registry, revision, zone and clock, then perform the entire pass:
 
-The stored balance is authoritative, not recomputed by summing incomplete historical data. Record each effect in the same Finance write as its operation. This is deliberately not an accounting ledger.
+`permission read → inventory → desired/capacity → own cancellations → re-list → own scheduling → readback verification → registry finalization`
 
-| Action | Atomic balance effect |
+Hold exclusion across all awaits in that pass, including required registry writes. Release in `finally`; a rejected job must not poison subsequent jobs. Capture no stale inventory before acquiring the queue. Only the domain coordinator acquires it; neither OS methods, reconciler nor registry writer re-acquires it. Do not await another domain's reconciliation while holding it. An unresolved native call keeps the queue occupied; never release on a timeout and let the unresolved mutation race a second pass. Finance CRUD/navigation remain usable.
+
+Narrow Calendar change: wrap EACH call to its existing reconciler in the shared gate inside `runCoordinatedReconcile`, moving the state/revision capture into the queued callback. Preserve the existing bounded 16-pass loop and result semantics. Release between reruns so queued Finance work can proceed. Preserve Calendar controller coalescing; Finance coalesces its own requests too. Do not wrap the whole controller plus the reconciler twice.
+
+For startup, when both domains are ready enqueue Calendar then Finance. Hydrate independently; a failed/unready domain cannot stop the other from reconciling. A domain ready later joins the FIFO then. After startup use FIFO with at most one pending rerun per domain. Within Finance, earliest future trigger then deterministic ID; Calendar keeps its existing instant/eventId/kind ordering.
+
+Capacity is **48 TOTAL pending OS requests**, counting Calendar, Finance and unknown/foreign. Each pass treats all other owners as foreign. Derive its own eligible window from `max(0, 48 - foreignCount)`. Never evict another owner to favor an earlier own request. After own cancellations, re-list and allocate only `max(0, 48 - currentPending.length)` new slots. A cancellation without confirmed absence frees no slot. Before EVERY new schedule, check capacity against the latest trusted inventory and any successful calls not yet reflected in it. Never reset occupancy to an older inventory after a readback error. The mandatory shared safety protocol below governs all uncertain outcomes.
+
+This prevents two callers seeing 40 and each allocating 8. It does not promise globally earliest 48 or equal quotas. Existing foreign requests above 48 are retained: add none and report capacity; the app cannot promise to reduce someone else's inventory. Under an accurate native inventory and initially compliant occupancy, coordinated app scheduling must never increase total beyond 48. Foreground/focus/retry refills vacancies; no background refill/delivery guarantee.
+
+### Shared ambiguous-schedule protocol — mandatory for Calendar AND Finance
+
+Implement the protocol once in `localNotificationScheduleSafety.ts`, used by the current Calendar scheduling loop in 6B.1 and by Finance in 6B.2. A pass-scoped safety session owns the latest trusted pending set, its capacity accounting and whether new schedules are blocked. It receives injected OS list/schedule functions and exposes refreshed inventory plus typed outcomes (`verified`, `unverified`, `capacity`, `inventory-error`, `aborted`) to the domain reconciler. Domain ownership, full request matching, registry/tombstones and desired-order decisions stay domain-specific; pass the existing domain matcher to the verification step. Do not change Calendar trigger/fingerprint tolerances.
+
+The session runs INSIDE the already acquired process-global queue. It never acquires that queue itself, never calls another domain, and never starts a detached recovery read. All scheduling in either domain passes through it; there must be no raw `os.schedule` fallback that bypasses its blocked state. The native adapter remains the sole Expo boundary.
+
+1. Begin the pass under the shared queue, read actual pending inventory, and compute used/free capacity from the entire set. No successful initial read means no scheduling. After domain cancellation attempts, supply a fresh native list to the safety session; attempted cancellation alone cannot remove an item from its trusted inventory.
+2. Before each schedule, require a trusted capacity state with space below 48, a still-current revision and a still-future trigger. Keep any successful, not-yet-verified schedule conservatively counted. Counts may assist normal bookkeeping, but cannot resolve an ambiguous native outcome.
+3. If `schedule()` resolves successfully, consume its slot immediately, including when the returned ID is unexpected. Perform normal full native readback verification. A successful re-list becomes the new authoritative set and capacity is recomputed from it; do not double-count a request already present in that set. If verification fails, do not reuse the attempted slot unless a fresh successful native list proves it free. A mismatching request that remains present still occupies capacity and is handled through existing ownership/cancellation rules, not blind replacement. If the verification list fails, stop further scheduling and return a visible retryable error; retained occupancy is not permission to fall back to the pre-call count.
+4. If `schedule()` throws/rejects, conservatively assume it MAY have created a request. Immediately block ALL further scheduling in this pass and await a native inventory re-read while still holding the same global queue. Do this even if the fake/native implementation appears to have thrown before insertion: promise failure is not evidence of absence. Incrementing/decrementing a local counter, assuming rollback, or merely catching/logging the exception is insufficient.
+5. If that re-read succeeds, replace the trusted pending set, recalculate total capacity, and determine whether the attempted ID exists. When present, apply the unchanged full domain matcher: an exact current match can converge through ordinary verified bookkeeping, while a mismatch remains an occupied, unverified request. When absent, its slot is proven free. Only AFTER these decisions and fresh revision/time checks may scheduling resume in desired order. Attempt each candidate at most once per pass; a failed absent candidate may be retried on a later requested pass, avoiding an immediate retry loop. Other valid candidates may use capacity proved free by the recovery read.
+6. If the recovery read fails, return `inventory-error`, abort further scheduling for the pass and publish visible retryable reconciliation error. Keep registry recovery intent, do not claim success or free capacity, and do not let the outer reconciler catch the error and continue its old scheduling loop. A later pass must acquire the queue and begin with a new successful native list. A stale revision also prevents scheduling resumption and instead requests a latest-state rerun after releasing the queue.
+7. Successful OS scheduling followed by failed registry persistence does not release its slot or roll back the domain commit. Preserve native occupancy and reconcile from inventory on retry/restart. No recovery branch cancels Calendar/Finance/foreign requests merely to create space; only the domain's proven ownership and normal obsolete-request rules authorize cancellation.
+
+For Calendar, replace the current `schedule` catch-and-continue/cached-capacity path with these typed outcomes and refreshed inventory accounting. Terminal inventory failure must exit its scheduling phase. Retain its durable prewrite, native matcher, tombstone rules, event revision guards, start/advance ordering and existing result/UI schema. A recovered exact match may yield capacity-limited success; otherwise surface the existing retryable error. Both outcomes must reflect native reality, never a fictitious free slot. This narrow correction is explicitly permitted in §10 and must land before Finance scheduling exists.
+
+Capacity examples: 47 foreign + two desired requests allows at most one new request; 40 Calendar + 8 unknown leaves Finance zero slots. A cancellation frees capacity only after native re-list confirms absence. Failed cancellation or an item still present frees none. In the reproduced ambiguous A case, recovery sees 48, so B is not scheduled and A/foreign requests are not evicted to make room.
+
+## 6. Finance reconciliation algorithm and stale work
+
+Finance controller runs only when domain and registry hydration are ready. Subscribe to durable Finance publications: compare committed obligation reminder projection (ID/title/date/time/enabled/completed) to request work, ignoring saving/error-only publications and unrelated money changes. Any committed revision change still invalidates an in-flight pass. Register the subscription before loading, reconcile once hydration is ready, and avoid duplicate UI scheduling hooks.
+
+1. Acquire shared queue; capture latest snapshot and `snapshot.revision`, registry, current zone/clock and a lifecycle generation. `shouldAbort` checks phase/revision/generation after awaits and immediately before mutations/publication. A zone or permission transition also requests a new generation/pass.
+2. Read permission without prompting, then the ONE native inventory. A read failure produces retryable error with no guessed cancellations or new schedules. Derive eligible future requests plus per-obligation off/completed/past/unschedulable states. Sort and determine the window against foreign occupancy.
+3. For positively Finance-owned obsolete/changed/completed/deleted/disabled/out-of-window requests, persist tombstone before cancellation, recheck revision, cancel individually, and re-list to confirm absence. Persist deletion of tombstone only after successful confirmation. Failed persist/cancel/list retains recovery intent and visible error; never count assumed free capacity. Cancel obsolete owned orphans by the same protocol.
+4. With denied/revoked/unrequested permission, schedule nothing; clean owned pending with the same protocol, retain domain intent, and show the appropriate permission state. Provisional follows granted scheduling with quiet-delivery UI.
+5. Re-list AFTER cancellations; calculate actual slots. Keep fully matching eligible requests without churn. Adopt matching owned requests absent from a valid/empty registry only after native verification and successful registry write. A registry record with missing native request is unscheduled, not success.
+6. For missing eligible requests with capacity, persist `pending` intent first. Recheck committed revision, zone/generation and a fresh clock AFTER persistence, immediately before schedule. If target is now past, do not schedule; clean bookkeeping when safe and show past. If stale, abort and rerun.
+7. Schedule through the shared safety session (§5), which delegates to the neutral adapter. Consume capacity immediately on success; require returned ID to match. On rejection, block further schedules, await the authoritative inventory re-read and recompute capacity before any continuation; failed recovery read terminates scheduling with retryable error. Re-list and check full native request (§7), then persist `scheduled` with observed context/verifiedAt. Prewrite failure prevents that schedule. Post-schedule write failure leaves the saved obligation and native request intact, reports error, and recovers by inventory on retry/restart. Never schedule a duplicate to compensate for a registry failure.
+8. Final inventory/verification updates per-obligation results and confirms tombstone absence. Failed final list cannot be treated as empty or prove successful cancellation. Report capacity only for eligible requests actually excluded for lack of slots; verification/storage errors get error state, not a misleading capacity label. Publish only results still current for the captured revision/generation.
+9. Release queue. If stale, coalesce and enqueue a latest-state rerun behind already queued work. Bound immediate reruns as Calendar does; keep a pending/error state after the bound and allow lifecycle/retry, rather than claiming convergence or spinning indefinitely.
+
+An already-issued native schedule/cancel cannot be undone mid-await. If completion/delete/title edit commits while schedule is paused, the old OS call may land; reject its stale success and reconcile the newest state to cancel/replace it. Tests assert the converged result and lack of stale UI publication, not an impossible atomic transaction between Finance and the OS.
+
+Registry persistence is not Finance persistence. A successfully saved obligation stays saved after permission, inventory, cancellation, scheduling, verification or registry failures. For a deleted item whose cancellation fails, show a Finance-level retry banner because its row no longer exists. Never roll back deletion or claim the old reminder was cancelled. Domain write failure must produce no notification mutation derived from its uncommitted draft.
+
+## 7. Native verification, timezones and dates
+
+Finance matcher requires deterministic ID; valid Finance owner/obligationId/due identity; current fingerprint; exact native title/body; finite exact `targetTriggerAt`; valid adapter `scheduledAt`; and a decodable native trigger. Reuse the current Calendar trigger classifier/decoder and shape-specific tolerances (absolute 2 s, interval handoff 30 s). Unknown or mismatched native trigger fails even with perfect metadata. Do not broaden Calendar matching or claim that a stored scheduled record proves present native state.
+
+Use the existing pure `zonedDateTimeToUtcEarlier` directly; no second date converter or hardcoded Kyiv offset. Local dueDate/time stay unchanged during travel; a later pass resolves them in the CURRENT device timezone and safely replaces the UTC target. Capture zone at execution, not screen mount; foreground/active refresh detects changes. A timestamp that becomes past during awaits is never scheduled as immediate catch-up.
+
+- Spring gap: no normalization to another hour. Save the obligation, mark the reminder unschedulable and offer date/time edit. Cancel an old owned target after a timezone change makes its local time nonexistent.
+- Autumn fold: use Calendar's earlier occurrence. Do not switch to the later occurrence just because the earlier one is past.
+- Support strict Gregorian 0001–9999 in the domain. Avoid year-0–99 JS constructor remapping. Unknown zone, conversion failure or actual native range rejection yields an unavailable/error reminder; do not change the stored date, silently drop the obligation or claim universal OS range support.
+- Past trigger: leave obligation/overdue display intact, show past, never schedule null/immediate trigger. Pending notification verification proves scheduling at check time, not future delivery.
+
+## 8. Permission and root lifecycle coordination
+
+The neutral permission coordinator preserves current granted/denied/undetermined/provisional/ephemeral mapping and request options. Both Calendar facade and Finance controller delegate explicit requests to its one in-flight promise. Simultaneous button presses must cause one native prompt. A separate generation guards late permission reads so older undetermined results cannot overwrite a newer grant/denial; retain Calendar's latest-state merge behavior.
+
+Permission prompts happen only from explicit “Включить уведомления”, never hydration, focus, retry, saving intent or foreground. Denied/cannot-ask-again offers Settings. Provisional means quiet delivery, not full alerts. A completed permission request publishes to both domains and enqueues reconciliation AFTER the prompt promise settles; it must not hold or await the inventory queue while another queued pass awaits that same permission promise. Inventory passes only read permission. Permission failure leaves prior known state marked unavailable/error, not fabricated denied/granted.
+
+Root mounts one notification lifecycle and one foreground handler. Replace Calendar hook's ownership of notification AppState/timer wiring with neutral fanout; retain its exported Calendar hooks/commands and controller singleton. Do not mount both old root lifecycle and new lifecycle simultaneously. Preserve active-only 60-second Calendar refresh and actual initial AppState. Hydrate Finance at root for reminders even if its tab has never opened; existing FinanceScreen load remains idempotent. Loading does not initialize Finance or create a daily allowance.
+
+Fanout on startup readiness, app active transition, active periodic refresh and Settings return refreshes both domains. Finance focus and explicit retry request its controller; relevant committed obligation changes request it regardless of tab. Finance's existing UI day hook/allowance establishment and sheet protections remain unchanged; do not add a separate Finance NOTIFICATION AppState listener. No background execution promise or new background task.
+
+## 9. Finance UI and tap routing
+
+Replace deferred copy in the obligation form with privacy help and actual reminder status. One existing Finance tab with its three sections remains. Status comes from the notification controller's verified results keyed by obligation ID and current desired fingerprint, not the domain intent flag or persisted registry alone.
+
+| State | User-facing treatment |
 | --- | --- |
-| Add new expense | subtract full amount, even if it becomes negative |
-| Add actual income | add amount; expected income alone has no effect |
-| Edit applied expense | add old amount, subtract new amount |
-| Delete applied expense | add its amount back |
-| Edit actual income | subtract old amount, add new amount |
-| Delete actual income | subtract its amount; signed result allowed |
-| Date/note/category/source-only edit | zero balance effect |
-| Legacy-history expense edit/delete | zero balance effect; historical record only |
-| Set current balance | explicit replacement, never represented as income or expense |
-| Add/edit/complete/reopen/delete obligation or expectation | zero balance effect |
+| Off / completed | “Напоминание выключено”; completed items cannot schedule. Explain ordinary reopen keeps reminder OFF. |
+| Not requested | “Разрешите уведомления” and explicit enable button; save remains available. |
+| Checking/pending | “Проверяем напоминание…”; no success claim while hydrating or replacing old state. |
+| Verified scheduled | “Напоминание запланировано” with local date/time; verification is for current desired state. |
+| Provisional | If verified, “Запланировано · тихая доставка”; permission alone cannot produce scheduled status. |
+| Past | “Время напоминания прошло”; allow date/time edit, keep overdue obligation. |
+| Denied | “Уведомления выключены в настройках” plus Settings action. |
+| Capacity | “Пока не запланировано — нет свободного места”; retry/foreground may refill. |
+| DST/unsupported time | “Это время недоступно в текущем часовом поясе” or a specific unavailable-date message; edit date/time. |
+| Retryable failure | “Обязательство сохранено. Не удалось обновить напоминание” with retry. Cancellation failure separately says the previous reminder may remain active. |
 
-Operations are actual events: date <= current local today at acceptance. Reject future actual entries; offer expected income or obligation instead. Backdated actual additions affect current balance immediately, and their own date's expense total; explain this before saving a historical addition. Do not rebuild past allowance snapshots. Editing/deleting old applied operations also adjusts today's tracked balance by the displayed delta; confirmation shows it. Changing expense into income is not an edit: cancel/delete then create with explicit effects.
+Off/completed describes intent, not confirmed cancellation; show any outstanding cancellation error alongside it. Error takes precedence over an obsolete scheduled badge. Provisional is permission context on top of scheduling state. Use existing tokens/accessible controls, no redesign or technical registry vocabulary in product UI. Notification publications never bump the Finance domain revision, replace drafts or close newer sheets.
 
-Balance correction shows old/new/delta and commits atomically; it is excluded from spent/income statistics. Later edits of applied operations still use the delta table, not a recomputation from zero. No silent refund from a legacy expense whose original balance impact is unknowable.
+One root response subscription plus cold-start last-response read delegates to a pure owner dispatcher. De-duplicate the same response from both entry points using request ID plus delivery/response identity (including notification timestamp/action), not deterministic ID alone across future deliveries. Register/clean up once; defer navigation until root navigation is ready. No arbitrary route from payload, notification inbox or action buttons.
 
-## 5. Fixed daily-limit semantics
+Finance response sequence: verify canonical ownership/ID → await Finance hydration → re-read live obligation ID → navigate `/(tabs)/finance` → select Obligations → highlight the live row. Select completed history if the live target is completed. Highlighting is sufficient; do not force an editor over an unsaved sheet. Queue the UI intent until an existing sheet closes and recheck the entity then. If missing/deleted, show obligations list without an erroring editor. If Finance cannot hydrate, show its existing load-error/retry UI, not an invented empty dataset. A stale notification may safely open the current edited row; tapping has no financial side effects.
 
-### Day establishment and horizon
+Calendar-owned responses never enter the Finance branch. Preserve baseline default app opening (no current custom Calendar target route). Unknown/malformed/conflicting-owner responses perform no domain navigation. Add a regression for this exact Calendar behavior; implementing a new Calendar tap-to-event route would require separate scope.
 
-Every Finance focus/foreground refresh and every Finance command samples an injected local clock. Before the first domain mutation on a local date D, ensure that date's allowance is established from the PRE-mutation committed state. Establish it in the same transaction when there is a mutation; a read-only day-open writes its own snapshot before showing the limit as saved. Domain money commands require initialized=true; setup is the only mutation accepted before that. Write failure means “Лимит не сохранён — повторить”, not a fake fixed value. Once saved, expenses, income, balance changes, schedule changes and obligation changes never rewrite it automatically.
+## 10. Exact allowed protected changes and proposed files
 
-MANUAL: snapshot amount = limit.manualMinor. AUTO: determine earliest unresolved positive expected income date strictly AFTER D, considering active monthly schedules and one-time expectations. Day-of-month 29/30/31 clamps to the real month end. Multiple expectations on the earliest date give one horizon; future expected amounts are NOT added to the numerator. Resolve/skip markers exclude that occurrence. Past expectations remain visible as overdue but do not become an imaginary future deposit. Today's unresolved expected income is shown as “Ожидается сегодня” and does not form a zero-day divisor.
+Paths below are relative to `mobile/`. This is a future implementation allowlist, not a claim that files exist or were changed.
 
-If no later income exists, use explicitly configured fallbackEndDate, which must be >D. Do not silently assume a 30-day month. If no usable horizon exists, show “Укажите дату следующего дохода или ручной лимит”; limit is unavailable (no allowance row yet), while expenses and balance remain usable. Once a usable setting is supplied, create the missing snapshot from that command's post-setting state before any subsequent money operation. An existing snapshot is never replaced through this exception.
+| Files | Allowed work |
+| --- | --- |
+| ADD `src/services/notifications/localNotificationContract.ts`, `expoLocalNotifications.ts` | Neutral types/decoders, sole Expo adapter and response boundary. |
+| CHANGE `src/services/notifications/expoCalendarNotifications.ts`, `calendarNotificationContract.ts` | Compatibility facade/re-exports only; identical Calendar ownership, IDs, payload, options and decoding. |
+| ADD `src/services/notifications/localNotificationReconcileQueue.ts`, `localNotificationScheduleSafety.ts`, `notificationPermissionCoordinator.ts` | 6B.1: one queue singleton plus injectable factory, shared inventory/capacity/ambiguous-schedule safety session; permission single flight only as needed for the shared binding. |
+| CHANGE `src/services/notifications/calendarReconcileCoordinator.ts` | 6B.1: gate each existing pass; sample latest state inside the gate. No generic reconciler rewrite. |
+| CHANGE `src/services/notifications/calendarNotificationReconciler.ts` | 6B.1: replace only ambiguous schedule/cached-capacity continuation with the shared safety session and authoritative re-read protocol. Preserve ownership, storage, registry/tombstone, start/advance, revision, permission, trigger/fingerprint, DST and UI contracts. |
+| CHANGE `src/features/calendar/calendarNotificationController.ts`, `useCalendarLifecycle.ts` | Only dependency/lifecycle/permission fanout adaptation if necessary. Preserve coalescing, revision reruns, today marker, error merging, API and UI behavior. |
+| ADD `src/services/notifications/financeNotificationContract.ts`, `financeNotificationPlanner.ts`, `financeNotificationReconciler.ts`, `financeReconcileCoordinator.ts` | Finance identity/content/native matcher, pure desired requests, separate convergence protocol and revision coordinator. |
+| ADD `src/types/financeNotifications.ts`, `src/storage/financeNotificationStorage.ts`, `src/services/notifications/financeNotificationRegistry.ts` | Strict separate V1 schema, injected storage and immutable registry factory. |
+| ADD `src/features/finance/financeNotificationController.ts`, `useFinanceNotifications.ts` | Injected controller, stable UI subscription/commands; no direct Expo or AsyncStorage import here. |
+| ADD `src/services/notifications/financeNotificationRuntime.ts` | Production binding for Finance registry AsyncStorage and controller dependencies. Keep storage imports out of additional Finance feature files. |
+| ADD `src/services/notifications/useLocalNotificationLifecycle.ts`, `notificationResponseRouter.ts`; CHANGE `app/_layout.tsx` | Single root wiring, hydration/fanout and owner dispatch. No theme/tab changes. |
+| CHANGE `src/features/finance/FinanceScreen.tsx`, `FinanceSections.tsx`, `FinanceSheets.tsx` | Verified status/retry/permission UI, explicit due-date removal behavior, focus and one-shot tap highlight. Retain sheet revision/identity checks and money commands. |
+| CHANGE `src/types/finance.ts` | Comment-only removal of obsolete “intent only in 6A” wording, if needed. No domain fields/schema changes. |
+| ADD/EXTEND `tests/finance-notifications.test.mjs`, `finance-notification-controller.test.mjs`, `finance-notification-storage.test.mjs`, `local-notification-coordination.test.mjs`, `notification-permissions.test.mjs`, `notification-routing.test.mjs` | Production-path tests and shared fake inventory coverage. Structural adapter/queue tests may extend existing Calendar test files without weakening their assertions. |
+| CHANGE `tests/finance-wiring.test.mjs` | Replace obsolete deferral-copy assertion with active integration/boundary assertions; preserve no direct Expo scheduling in Finance feature files, no network/browser/API and singleton storage safeguards. |
 
-For AUTO:
+Calendar planner, store, storage, types, Screen, date utilities and sheet guards require **no planned behavioral changes**. Calendar reconciler changes are explicitly allowed ONLY for ambiguous-schedule/capacity safety and consuming required shared infrastructure. Calendar event CRUD, storage schema, owner/IDs, start/advance semantics, native trigger/fingerprint verification, DST gap/fold/timezone policy, permissions, tombstones and current UI behavior remain unchanged. Do not edit them simply for generic naming. If an import-only re-export adjustment is unavoidable, identify it explicitly in the implementation diff; all existing contracts remain protected. Finance model/store/domain parser, money/aggregate/date/legacy adapter, operation forms, calendar projection and allowance/day machinery require no changes. No new package or app configuration is currently required by this design.
 
-- N = Gregorian calendar-day difference horizonDate − D, not elapsed milliseconds / 24h.
-- Coverage is [D, horizonDate), i.e. today is included and income day excluded.
-- allowanceMinor = floor(max(0, preMutationBalanceMinor) / N).
-- Persist D, mode, value, base balance, horizon, N and capturedAt. Discard no fractional cents into another day automatically.
+## 11. Two implementation checkpoints — later authorization only
 
-The allowance is fixed **for that date**, not forever for the whole pay period. Tomorrow derives a new snapshot from then-current balance and remaining calendar days. Explain this in mode help. No carry-over field and no automatic compensation today for overspending yesterday. This is a budgeting aid, not a guarantee of solvency.
+### Slice 6B.1 — Shared notification safety infrastructure
 
-### Today's display and explicit changes
+Record baseline status/SHA, protected file hashes/diff list, and actual 472-test result before code changes. Preserve any unrelated user changes. Implement the neutral adapter/compatible Calendar facade, process-global full-pass queue, shared 48-total policy and `localNotificationScheduleSafety.ts`. Adapt only Calendar's ambiguous-schedule/capacity path and necessary coordinator wiring. Extract native inventory/readback primitives without altering domain verification. Shared permission coordination may be wired where required by the neutral boundary, retaining explicit-action-only Calendar behavior; it must not introduce Finance lifecycle/UI early.
 
-spent(D) = sum of ALL recorded expenses dated D, including legacy history, without subtracting income. remaining(D) = savedAllowance(D) − spent(D). Never clamp remaining: show “Превышение 120 ₴” for −120. Current available balance and daily remainder are separate values.
+Allowed 6B.1 production files are the neutral contract/adapter/queue/safety module, compatible Calendar contract/adapter, Calendar reconciler/coordinator, and Calendar controller/lifecycle or neutral permission coordinator ONLY as needed for this infrastructure. Keep root's current Calendar-only lifecycle unless a strictly necessary structural change is documented. Root Finance hydration, response routing, Finance registry/planner/reconciler/runtime/UI and Finance deferred-copy changes belong to 6B.2. Do not add a placeholder Finance scheduler in 6B.1.
 
-Examples (UAH):
+Acceptance:
 
-- At day-open balance 12,800 and horizon 10 calendar days away: AUTO=1,280.00. Expense 350 => balance 12,450, spent 350, same limit 1,280, remaining 930.
-- MANUAL=500, available now 12,450, spent today 350 => remaining 150. If spent becomes 620, limit stays 500 and overspend is 120.
-- AUTO 15,000 over 6 days => 2,500. Expense 3,000 => balance 12,000; today still 2,500, overspend 500. Next day: 12,000/5=2,400 if nothing else changed.
-- AUTO 10.00 over 3 days => 3.33, not 3.34. Negative balance => limit 0 with visible deficit.
-- Actual income 5,000 later today increases available; it does not rewrite today's snapshot. Income is not a refund that reduces spent today.
+- Existing Calendar behavior and tests remain unchanged; add safety regressions rather than replacing or weakening existing assertions. Compatibility exports preserve current test imports. All 472 baseline cases, including Finance's deferred-scheduling assertion, remain green.
+- Reproduce 47 foreign + native insertion of A followed by rejection; re-read sees 48 and B is not scheduled. Also pass every applicable §12.1 failure case.
+- Two queued production Calendar reconciliation passes/controllers against ONE fake inventory cannot race capacity. Pause the first after list and while scheduling; the second cannot allocate concurrently. This tests the shared boundary without implementing a Finance planner.
+- Foreign requests count toward capacity and are never evicted; uncertainty never permits stale-counter allocation. No Finance notification ID is scheduled or Finance reminder UI introduced.
+- Run the applicable §13 verification and review protected diffs; no device success claim from tests/export.
 
-Changing mode/manual amount/fallback horizon defaults to future days. Provide a separate explicit “Изменить лимит на сегодня” action with before/after, explanation and confirmation. In AUTO it recalculates from current balance and current future horizon; in MANUAL uses proposed amount. It updates today's row with revision+1/reason=explicit-change in the same write as any settings change. Expenses remain untouched and overspend is recalculated against the expressly changed value. No automatic prompt after every expense.
+**Gate: obtain an independent Codex review of the 6B.1 implementation and explicit REVIEW_OK before starting any 6B.2 implementation.** Passing tests or completing an implementation report alone does not satisfy this gate. Stop at the checkpoint for review; do not automatically continue into Finance notifications. This document defines that future gate; it does not claim REVIEW_OK for 6B.1.
 
-Store at most one latest allowance row per date; revision identifies an explicit replacement. Past dates are read-only. Returning to a date after timezone/clock changes reuses its saved snapshot, never duplicates it. No synthetic historical snapshots for days the app was not opened; selected-day history says “Лимит не зафиксирован” when absent. On overnight form save, sample the current date again and establish the new day's allowance; keep an explicitly chosen transaction date. A default “today” date must be refreshed or shown for confirmation if the day changed while editing.
+### Slice 6B.2 — Finance notifications
 
-## 6. Expected and actual income
+Only after 6B.1 REVIEW_OK, record the reviewed infrastructure checkpoint and implement the Finance registry, desired planner, obligation reconciler/coordinator and controller. All Finance scheduling must consume the reviewed queue and safety session; no second capacity algorithm or independent Expo scheduler.
 
-Monthly SalarySchedule stays recognizable and backward-mappable: dayOfMonth, title, expected amount and timestamps remain. Native source/active metadata is additive; major-to-minor storage conversion is explicit. Several schedules support salary plus advance; identical dates are allowed, duplicate IDs are not. Editing a schedule affects future/unresolved expectations, not recorded income or past allowance values. Deleting/pausing a schedule never deletes receipts. Retain resolution refs as historical identifiers even when a schedule was deleted; do not regenerate a deleted schedule from receipts.
+Add Finance local reminder UI/permission state, commit-driven completion/edit/delete/reopen cancellation/rescheduling, root hydration/lifecycle fanout, Settings return, Finance obligation tap routing and capacity-limited UX. Replace deferred copy/test assertions only now. Preserve Finance core and Calendar contracts described throughout this brief.
 
-PlannedIncome represents one future/overdue expectation; FinanceIncome represents an actual receipt. From an expectation, “Получено” opens the income form with editable amount/date/source and commits income+received resolution+balance in ONE write. Stable occurrence key prevents duplicate receipt on rapid taps/retry. No payment is assumed from crossing midnight or reopening the app. “Пропустить” resolves an expectation without balance effect. Reopening a skipped occurrence removes that marker; received occurrences must be changed through their linked income, not posted twice.
+Acceptance: all Finance and actual cross-domain production-path tests in §12 pass against one shared fake native inventory, including concurrent Calendar + Finance at 47 pending and ambiguous failure on either domain. All protected baseline guarantees remain green; perform §13 checks and report actual implementation/native acceptance separately. No Slice 7 work.
 
-Deleting a linked income reverses its amount and removes its received marker, making the expectation unresolved if its source still exists. Editing its receipt amount/date does not change the original expected occurrence key. A skipped occurrence can later be received by replacing its marker atomically. A one-time expectation with a linked receipt is read-only except its descriptive title; delete expectation only retains the receipt and its historical reference. Monthly recurrence generation is bounded to requested month/nearest-next lookup, not materialized for thousands of years.
+## 12. Acceptance criteria and production-path test plan
 
-## 7. Obligations and reminders UX
+Tests must execute the production adapter boundary/helpers, planners, stores, registry, queue, coordinators, controllers and response dispatcher with injected OS/storage/clock. UI tests must drive real components/helpers where applicable. Static wiring scans supplement behavior tests; no unused copy of the scheduler.
 
-| Stored kind | Label | Examples | Balance effect |
-| --- | --- | --- | --- |
-| payment | Платёж | rent, utilities, credit payment | none until separate actual expense |
-| debt | Я должен | debt to friend | none until separate actual expense |
-| receivable | Мне должны | friend owes user | none until separate actual income |
-| purchase | Покупка | phone, laptop | none until separate actual expense |
+| Group | Required evidence |
+| --- | --- |
+| ONE inventory / cap | Start with 40 mixed/foreign requests; enqueue Calendar and Finance together. Pause the first pass inside list, cancel and schedule in separate tests. Assert second pass cannot inspect/allocate concurrently and every mutation trace stays at or below 48. Both use the same queue AND fake inventory; record max occupancy, not just final size. |
+| Ownership | Real Calendar and Finance reconcilers never cancel each other's valid requests or foreign ones. Malformed/mismatched ID/owner/kind are rejected by Finance. Unknown requests consume slots. No cancelAll. Test 48 foreign and already-over-cap foreign inventory without deletion. |
+| Topology/fairness | After cancellations, allocation uses a fresh list; failed cancellation still occupies a slot. Own earliest/stable ordering; combined startup order when both ready; FIFO/coalescing; a rejected job releases the queue, stale reruns do not starve the other queued domain. No nested acquisition. |
+| Capacity failures | Schedule success plus failed readback consumes capacity. Schedule success plus failed final registry write leaves one pending request and no duplicate on retry. Ambiguous schedule rejection cannot grant an unverified free slot. Foreground after a fired/cancelled request refills safely. |
+| Native truth | Registry scheduled/native missing reschedules only if future. Alter owner, ID, kind, obligationId, title/body, fingerprint, target, shape or native time and require mismatch. Test absolute strict/interval handoff/unknown shape through the shared production decoder; unchanged requests do not churn. |
+| Registry/restart | Prewrite failure means no schedule. Post-schedule failure, restart with stale registry, missing registry plus matching OS request, obsolete owned orphan, failed cancel/list, failed tombstone removal and corrupt/unknown-version bytes. No lost domain writes, false success or foreign cancellation. Read-error/corrupt Finance domain blocks destructive cleanup. |
+| Stale passes | Pause list/persist/schedule/cancel, then commit title/time edit, deletion or completion. Stale UI success never publishes; latest pass converges with no stale target. A trigger expiring during registry write never schedules. Registry writes do not bump Finance revision; newer unsaved sheets survive notification updates. |
+| Obligation product | All four kinds, default OFF, required date/time, exactly one due alert, explicit dueDate removal commit-before-cancel. Completion disables intent and cancels; ordinary reopen remains OFF. Using real model/store, explicitly enable a completed row, then reopen: future schedules, past does not. No balance/operation/allowance effect from any notification path. |
+| Permissions | No startup/focus/retry/save prompt. Simultaneous Calendar/Finance enable requests invoke native request once. Test denied, provisional, read/request failure, late stale read and Settings return refreshing both. Preserve Calendar delayed-result merge regressions. |
+| Lifecycle | Finance reminders hydrate without opening the tab; one failed store does not block the other domain. Initial inactive/background state, active-only refresh, foreground, focus, committed changes, explicit retry and timezone refresh converge through the same production queue. No duplicate notification AppState registration. |
+| Dates | Kyiv and Los Angeles gap/fold fixtures, UTC, timezone travel and return, fresh clock before OS scheduling, earlier-fold occurrence already past, invalid zone and native range failure. Domain years 0001/0009/0099/0100/9999 preserved; 0000/impossible dates rejected. |
+| Tap/UI | Warm/cold live Finance tap, edited target, completed target, deleted target, hydration failure, duplicate response, later new delivery with same deterministic ID, existing unsaved sheet. Finance never routes Calendar; Calendar payload preserves current default app-opening behavior and never changes Finance selection. Unknown payload ignored. No scheduled badge before current native verification, including provisional/capacity/error cases. |
 
-Amount and title required; due date and reminder optional. Reminder toggle is OFF for new items; enabling requires dueDate and a time, suggested 09:00 on that due date. One local notification per obligation, no advance reminder or repeating nag. Removing due date explicitly turns reminder off. Overdue items remain visible; do not fire an immediate historical notification. Reminder denial does not erase due date or intent.
+### 12.1 Mandatory ambiguous-schedule regressions
 
-Completion/reopen is status-only (“Отметить выполненным”, help: “Баланс не изменится”). Do not label the action as executing a payment. Actual expense/income remains a separate user action in Operations, avoiding an implicit double debit/credit. No hidden link, partial settlement or interest calculation. Completing or deleting cancels the reminder after metadata commits; reopening schedules only a still-future configured reminder. Editing due date/time/title reschedules and verifies current content. Completed history remains accessible; delete requires identity/revision-aware confirmation and never changes balance.
+Use the real Calendar reconciler and the production shared safety module with injected fake OS/storage/clock. Keep existing Calendar test bodies/assertions unchanged and add these regressions to `tests/calendar-notifications.test.mjs`; queue tests belong in `tests/local-notification-coordination.test.mjs`. In 6B.2 exercise the same shared failure protocol through the real Finance reconciler too. Inspect operation order and maximum inventory size after EACH native mutation, not just the final count.
 
-## 8. Persistence, migration and preservation
+| Case | Required trace and assertions |
+| --- | --- |
+| Main Calendar regression: 47 foreign, A inserted then schedule rejects | `list(47) → schedule(A): native insert, rejection → recovery list(48)`. No schedule(B) before recovery or afterwards at capacity. Final and maximum pending count <=48; A is verified/accounted for or reported retryable, never blindly duplicated/cancelled. Result is capacity-limited or retryable according to inventory. All foreign items remain byte-for-byte unchanged; no incorrect owned cancellation. |
+| A. Rejection before native insertion | Initial 47; schedule(A) throws without insertion. Recovery list is still REQUIRED and returns 47. One other valid future candidate may then be scheduled, ending at 48. Trace must prove recovery read precedes the next schedule; do not treat rejection itself as freed capacity or spin retrying A. |
+| B. Successful schedule, failed verification/list | Initial 47; native adds A successfully, then readback list fails (also test content verification mismatch with A still present). Slot remains consumed and B cannot become the 49th request. Failed list yields retryable error and stops scheduling; a mismatching present request is still occupied. Only a fresh successful list proving absence may free the slot. |
+| C. Ambiguous rejection AND recovery-list failure | Native inserts A then rejects; immediate re-read fails. No further scheduling calls in that pass, visible retryable error, durable recovery intent retained, no speculative free slot. Next requested pass begins with an authoritative read and safely converges. |
+| D. Queued Calendar and Finance against 47 pending | 6B.1 tests two production Calendar passes with the shared queue. After 6B.1 REVIEW_OK, 6B.2 tests real Calendar AND Finance concurrently against ONE inventory; repeat ambiguous insertion/rejection on either domain. The second pass cannot list/allocate inside the first pass's critical section; combined maximum/final count <=48 with no cross-cancel. |
+| E. Foreign capacity and cancellation proof | Unknown/foreign items consume slots and survive unchanged. 40 Calendar + 8 unknown leaves Finance zero slots. Successful confirmed own cancellation permits refill; cancel throwing or resolving while the item remains on native re-list frees nothing. No cancelAll or eviction of another domain. |
 
-Storage key: `workazy-native-finance-v1`, envelope version 1. Use AsyncStorage behind an injected port as in existing native stores. Separate OS registry key `workazy-native-finance-notifications-v1` stores `{version:1,records,savedAt}`; records use the Calendar registry lifecycle/status contract with obligationId and kind='due'. A registry failure is a reminder failure, never a rollback of a successfully saved financial operation.
+All these tests must exercise production-used safety paths. They must detect the old Calendar catch-and-continue behavior; the main regression must fail against the protected checkpoint's current reconciler. Do not add a duplicate safe scheduler only in test code.
 
-Strict parse before publish AND before every write: validate full envelope, finite safe integer amounts and aggregates, enums, IDs/duplicates, real dates, timestamps, reference uniqueness and receipt/resolution consistency. Unknown schema version, corrupt bytes or invalid rows => load-error; retain original bytes, block writes and offer retry. Never replace with empty state or filter “bad” records out. No other feature's storage is touched. Corrupt notification registry blocks its destructive reconciliation until recovered; do not delete unknown OS notifications.
+Required outcome: real local reminders converge after durable Finance commits, preserve all protected core behaviors and Calendar semantics, keep one shared capacity policy, expose failure without falsifying financial data, and remain retryable after restart. Passing tests do not prove delivery.
 
-Store pattern: loading/ready/load-error, frozen snapshot wrapper and deeply frozen rows/nested refs/settings, monotonic committed revision, synchronous write gate acquired before awaits. CRUD accepts expected identity/revision and changed fields; stale/busy submissions return typed results. Build exact candidate from latest committed state, validate/serialize, await durable setItem, then publish. No optimistic balance or allowance update. Failed write leaves previous state and UI draft intact; retry uses stable intent/entity IDs. Domain mutations and registry writes cannot overwrite each other's envelopes. App termination before a write resolves is not claimed atomic/durable. Hydrate before finance reminder reconciliation.
+## 13. Protected baseline and future verification
 
-### Legacy migration contract (no automatic web access)
+Before implementation record `git status --short`, `git rev-parse HEAD`, checkpoint `5a5486b4106b52e5372ba52e810d88ca01d2c629`, and hashes/diff-sensitive list of the audited Calendar files and existing Finance core. The checkpoint has 472 recorded tests, including the unchanged 362 pre-Finance baseline. Rerun and report actual baseline results before edits; do not copy this number as fresh verification.
 
-No earlier native Finance key/schema was found. Do NOT read other native slices for finance or introduce an unrequested web import flow. Slice 6 should include an injected pure, tested `migrateLegacyFinanceState` adapter so existing FinanceState is understood; its runtime invocation requires a future explicitly supplied transfer source. New native users start empty. Existing web localStorage and D1 JSON remain untouched and authoritative for web; there is no automatic cross-install/browser migration.
+Keep all 472 regression cases/guarantees green at both checkpoints. Existing Calendar tests/assertions stay unchanged; add the safety regressions without deleting or weakening any existing case, using compatibility exports to retain existing imports. In 6B.2 only, one Finance wiring case explicitly requires “Slice 6B” deferred copy: this is a temporary scope assertion contradicted by the newly authorized implementation, not a permanent prohibition. Replace only that temporary assertion/name with production integration coverage while retaining its direct-Expo boundary checks. Keep the completion-disables-intent model assertion unchanged. Document any structural test changes individually, never reduce coverage to obtain a green suite.
 
-When a transfer is separately authorized, its transaction must be:
+After future code implementation run mobile `npm test`, the suite with `TZ=Europe/Kyiv`, `TZ=America/Los_Angeles`, `TZ=UTC`, `npm run typecheck`, `npm run lint`, full ESLint, Expo dependency check/Doctor, iOS export, root `npm run build`, and `git diff --check`. Report actual results and pre-existing warnings/blockers separately. Inspect diff for protected files, duplicate Expo imports/lifecycle wiring, HTTP/browser/backend imports and cross-owner cancellation. No tests/build/native results are claimed by this architecture task; its requested verification is `git diff --check` and a documentation-only scope check.
 
-1. Preserve exact raw source bytes in a transfer backup before any target write. Decode either FinanceState or explicitly selected `personal-planner-v1.finances`; never guess between competing snapshots. No timestamp-winner overwrite of a populated native dataset.
-2. Validate all source rows first. Preserve IDs, array order, optional fields, complete text, timestamps and completed states. An absent legacy obligations collection becomes []; missing required collections, duplicates, invalid calendar dates, unsupported keys/precision/timestamps or unsafe amounts produce a report and block the whole conversion. No silent salvage. Legacy normalizer's regex-only dates/drop behavior is not the migration validator.
-3. Default known web currency to UAH and state that assumption in the transfer preview. Exact two-decimal major values convert to minor units using decimal parsing of their canonical number representation; binary artifacts or >2 decimals require an explicit rounding decision and report, with original bytes retained. Do not silently round legitimate source data. Legacy zero schedule amount is retained but not a horizon candidate.
-4. Legacy balance becomes balanceMinor as-is; do NOT subtract imported expenses again. Imported expenses get balancePolicy='legacy-history': they appear in history/spent totals, but editing/deleting them does not refund/debit today's balance. Explain this during transfer and in their edit/delete preview. Historical cashflow cannot be reconstructed because the web allowed balance resets and clamped overspending.
-5. salarySchedules map to active monthly SalarySchedule with no fabricated source label. Existing debt=>debt owed by user; purchase=>purchase; never guess receivable/payment from text. dueDate/reminderTime and completed preserve exactly; date with absent reminder time becomes explicit 09:00 to preserve the legacy default-reminder intent, recorded as a migration change. A reminderTime without dueDate must be reported rather than silently discarded.
-6. No receipts, income entries or historical allowances are invented. Preserve an existing valid FinanceState.updatedAt; if absent, use the accepted transfer instant for native state.updatedAt and balanceUpdatedAt (new bookkeeping, not a claimed historical transaction time). Set balanceUpdatedAt from legacy updatedAt when present. AUTO configuration starts without snapshots; establish today's allowance only after transfer is accepted. No notifications before successful target persistence AND a separately granted native notification permission; importing reminder intent is not consent to a new permission prompt.
-7. Validate/round-trip V1, persist target once, then publish; failure retains source/backup and leaves prior target unchanged. Repeated transfer ID must be idempotent, not append duplicates. Populated target requires a later explicit merge design; refuse automatic replacement. Transfer tooling/import UI, backup transport and server format changes are outside Slice 6.
+## 14. Native iPhone acceptance — PENDING
 
-Future native V2 must retain V1 bytes until conversion succeeds, use an explicit versioned adapter and refuse unknown future versions. Native-only negative balance, new kinds, currency, income and allowance snapshots cannot be pushed to legacy web unchanged. Preserve concepts via adapters; do not advertise wire compatibility merely because type names match.
+- [ ] First launch with existing Calendar/Finance data: no unsolicited permission prompt; reminders reconcile without opening Finance; no duplicate alerts after termination/restart.
+- [ ] Explicit permission prompt, denial, provisional quiet mode and Settings return observed for both domains; no simultaneous double prompt.
+- [ ] Near-future obligation notification delivered once with correct local date/time and privacy-conscious content; Calendar start/advance behavior still observed unchanged.
+- [ ] Edit title/date/time; turn OFF/remove date; complete/delete/reopen; verify native cancellation/rescheduling and honest UI under failures. No change in Finance money/allowance.
+- [ ] App foreground/background/terminated and warm/cold taps: correct Finance target/list, completed/deleted targets, no Calendar misrouting or discarded sheet.
+- [ ] Shared capacity pressure/refill, native inventory shape/timing, timezone travel, gap/fold and unsupported dates observed where reproducible. Do not equate mocks with native evidence.
+- [ ] Lock-screen privacy copy, keyboard-safe forms, accessible status/retry/Settings controls, VoiceOver, Dynamic Type, compact/notched iPhone layout.
 
-## 9. Native notification integration and cross-feature ownership
+OS delivery depends on device settings and execution opportunities. Existing pending iPhone acceptance remains pending until observed; export or unit tests cannot clear it.
 
-Reuse existing Calendar date conversion, trigger decoding, permission semantics, native pending verification and convergence protocol. No Telegram or server scheduling calls. Prefer small neutral helpers extracted from current modules over copying the entire reconciler or making a generic plugin framework.
+## 15. Explicit exclusions and this task's output
 
-- Finance namespace `workazy.finance.v1`, owner `workazy-finance-v1`, deterministic ID `workazy.finance.v1:<obligationId>:due`. Calendar namespace/owner/IDs remain exactly unchanged. Data includes owner, obligationId, kind='due', fingerprint and persisted targetTriggerAt/scheduledAt using current adapter policy. Fingerprint covers trigger, title and kind; use generic lock-screen body “Финансовое напоминание · <title>”, no amount, note or debt direction. Title is user-visible on lock screen; make that clear beside the reminder toggle.
-- One process-level serial **OS reconciliation queue** shared by Calendar and Finance, including cancel/list/schedule/read-back work. Each domain retains its own store, registry and desired planner. Do not wrap only individual calls: capacity read -> decisions -> mutations -> verification must be ordered against the other domain. Domain revision changes abort stale passes; rerun from latest state. Never await a nested acquisition of this queue.
-- Preserve existing total pending app policy 48, counting ALL OS pending requests, including unknown/foreign requests. Never allocate 48 per domain. On combined startup, enqueue Calendar then Finance; afterwards FIFO with coalesced per-domain requests. Within a domain use earliest trigger then stable ID. Existing valid foreign/domain requests are not evicted to prioritize another domain. This deliberately does not guarantee globally earliest-48 fairness; capacity-limited UI must say reminders remain unscheduled and will retry on foreground/tick. No claim all financial reminders fire when capacity is full.
-- Each reconciler cancels only its positively owned IDs; it must never cancel the other domain or call cancelAll. Finance's ownership predicate must not recognize Calendar prefixes. Unknown inventory occupies slots. A successful schedule is verified against actual native title/body/trigger AND metadata, preserving current absolute vs iOS interval tolerance/target policy. Registry metadata alone is not proof.
-- Failed list/cancel/schedule/verification/registry-write yields visible retryable notification state; finance Save may succeed while reminders need retry. Orphan/duplicate cleanup is scoped to confirmed ownership and latest committed desired state. Re-list after cancellations before allocating slots. Restart discovers actual pending inventory even if the last registry write failed.
-- Reconcile after hydrated startup, committed relevant CRUD, completion/delete, foreground/focus, timezone change and the existing active-only periodic refresh. No background timer guarantee or permission prompt at startup. Reuse one foreground handler; do not overwrite it with a Finance-only handler. Shared permission request flow is single-flight; ask only from explicit “Включить уведомления” action. Denied => Settings guidance; provisional => honest quiet-delivery status. Returning from Settings refreshes both domains.
-- On notification tap, route Finance-owned payloads to the existing Finance tab/obligation only after hydration and live ID check; missing/deleted target shows list. Never interpret Finance payload as Calendar event. No new inbox.
+No server push/APNs backend, Firebase, Telegram, web reminder API, GitHub Actions reminders, background delivery service, recurring obligation generation, advance Finance reminder, repeating nag, income notification, inbox, bank integration, FX, Finance cloud sync or import/export UI. No Slice 7 polish/onboarding/settings expansion, new tab, Calendar redesign, web/backend contract change or Plans/Journal/Media/Ideas behavior change.
 
-Required narrow exception to protected Calendar code: shared queue integration and neutral extraction only, retaining Calendar storage schema, IDs, start/advance semantics and existing tests. Update root lifecycle wiring only as needed for Finance hydration/notifications. Capture protected hashes before implementation; document this exception in the implementation report. Everything else in Calendar remains protected.
-
-## 10. Dates and mobile information architecture
-
-All financial dates are local Gregorian dates 0001–9999. Reuse proven native Calendar/Records date primitives or extract a neutral pure helper; never construct years 0–99 with `new Date(year,month,day)` or divide DST-spanning milliseconds to count days. Numeric/lexical sort is safe only after strict validation. Month/day navigation clamps and stops at range edges; no year 0000/10000 or overflow recurrence. Invalid timezone/unsupported native date-picker range produces explicit fallback text-date entry or unavailable reminder, not a remapped date.
-
-Reminder wall-clock dates/times follow the CURRENT device timezone, as native Calendar does. Travel changes reminder instant after reconciliation, not stored date. Use existing earlier-occurrence policy for autumn folds and explicit unscheduleable warning for spring gaps; no silent shift. Past trigger => no immediate alert. Existing web Kyiv policy is source context, not a fixed native timezone. Tests inject timezone/clock.
-
-One existing bottom tab, three internal segments: **Обзор | Операции | Обязательства**. Income settings are an Overview sheet, not a fourth segment.
-
-- Overview: available balance (tap to explicitly correct), fixed daily limit + mode/help, spent today, remaining/overspent, Add expense / Add income, next expected income and next open due obligation. Today's pending and overdue items must remain visible before future events; stable ordering date then ID; no fake “next” when none exists. Compact collapsible month calendar below the essential content.
-- Operations: mixed actual expense/income history, newest date then createdAt then ID; day filter from financial calendar, clear filter action, add/edit/delete sheets. A small type filter is sufficient; no report-builder. Expected amounts never masquerade as actual transactions.
-- Obligations: open/completed toggle, grouped readable kind labels or small optional kind filter; nearest/overdue due first, undated last. No four nested tab systems. Due date is not inherently a reminder. Long titles/notes have a full readable view.
-- Finance calendar is a view into Finance data only: expense/income activity, unresolved expected income and obligation due markers; selecting a day shows actual totals, separately labeled expectations/due items and saved allowance if present. No duplicate CalendarEvent creation. No forecast allowance presented as historical fact. Future day has no actual transactions and no invented daily snapshot.
-
-Use existing tokens, native typography and 44pt targets; semantic mint for income/available/success, restrained expense styling, explicit minus and “Превышение” text rather than color-only feedback. No desktop grid/tables or giant charts. Forms keyboard-safe with persistent reachable Save/Cancel, decimal keyboard plus visible currency, accessible labels, Dynamic Type and safe areas. Empty/loading/load-error/persist-error/notification-error/capacity states are real and retryable. No demo finances seeded in production.
-
-## 11. Implementation boundaries and acceptance criteria
-
-Expected future files: `types/finance.ts`; `features/finance/{financeModel,financeDates,financeStore,useFinanceStore,financeSheetGuard,FinanceScreen,...}`; `storage/financeStorage.ts`; pure Finance notification planner/reconciler/registry adapter; shared OS queue; small additions to existing root lifecycle. Names may follow current conventions. Add no package unless installed native facilities are demonstrably insufficient; no new HTTP or chart dependencies.
-
-Preserve root app/API/DB/worker/Telegram files and tests; Plans, Ideas, Journal/media/Records behavior, theme, four tabs and Calendar data contract. Only the narrow Calendar queue integration above is allowed. Before implementation record current git status, protected-file hashes and actual baseline checks; do not erase unrelated dirty changes from Slice 5.
-
-Acceptance requires working persisted flows, not just UI:
-
-1. First setup, signed balance, currency lock and both limit modes work offline through restart.
-2. Exact example 500 limit / 620 expense visibly remains 500 / 620 / overspend 120 after CRUD, rerender, restart and clock refresh.
-3. Actual income changes balance only once; expected income never auto-posts. Monthly and one-time receipts/retries are duplicate-safe.
-4. Expenses/incomes support add/edit/delete with exact deltas and no loss of notes/legacy fields. Past edits do not rewrite stored historical/today allowances. Failed save leaves drafts and persisted state intact.
-5. All four obligation kinds, due dates, optional reminders and completed history work; status changes never silently move money.
-6. Reminder scheduling/edit/delete/complete/reopen/restart/Settings return converge without touching Calendar-owned requests or exceeding shared capacity through a race.
-7. Legacy adapter preserves all accepted source data without double-applying expenses; incompatible data blocks with a report and no writes. No import or cloud sync claim.
-8. Finance calendar remains a Finance projection; no duplicate main Calendar entries or new primary navigation.
-9. Existing 362 baseline tests remain unchanged and pass; Finance tests exercise production-used paths. No runtime/security leakage.
-
-## 12. Test and verification plan
-
-Tests must call the real parser/model/store/reconciler/controller using injected storage/clock/OS ports; UI wiring receives separate inspection. Do not accept source-regex-only claims or tests of unused copies.
-
-- Money: integer cents, comma/dot input, zero/negative boundaries, unsafe integer/aggregate overflow, >2 decimals, huge amounts, subtract below zero, exact inverse edit/delete; imported historical effect zero; explicit balance correction then old operation edit.
-- Allowance: persisted pre-expense snapshot, identical value after expense/income/add/edit/delete/restart; 500/350/150 and 500/620/−120; floor cents; no horizon; fallback expiration; income today not zero divisor; midnight crossing, unopened days, timezone return, explicit mode/limit change versus next-day defaults; failed snapshot persistence and concurrent first expenses.
-- Expected income: 29/30/31 clamp/leap years; multiple schedules same day; zero expectations; next year boundary; today/overdue/skipped/received; duplicate receipt rapid taps; delete receipt reopens occurrence; schedule deletion retains linked income; no automatic credit.
-- Obligations: all kinds, due-less reminders refused, default off, completion does not change balance, reopen past vs future, stale confirmation after edit/delete, long untouched fields and completed history.
-- Persistence/migration: absent key vs corrupt key vs future version; unknown fields/enums/duplicate IDs; deeply frozen snapshots; parse before every write; write gate held across awaits; storage rejection, retry/stable IDs, hydration and async old completion; legacy balance not recomputed; optional obligations; legacy zero schedule; precision/invalid dates report; no source deletion; authorized transfer fixture idempotency and no target overwrite.
-- Notifications: two domains against ONE fake OS inventory/queue. Pause inside OS list/schedule/cancel, mutate state and enqueue other domain before releasing gate. Prove no duplicate schedule, cross-cancel, stale title/time or >48 allocation. Foreign requests, corrupt registry, cancelled-but-still-pending, successful schedule with failed registry write, process restart, denied/provisional permission, Settings return, empty/deleted target tap, capacity refill. Verify real native trigger/content rather than metadata alone.
-- Dates: UTC, Europe/Kyiv, America/Los_Angeles; years 0001/0009/0099/0100/9999; reject 0000/impossible dates; DST gaps/folds; travel changes timezone; no fixed offset/current date. Existing Calendar/Records date tests remain unchanged.
-- Regressions: >100k Journal text, untouched optional fields, immutable snapshots and persist-before-commit; Slice 5 files/leases/recorders/playback unchanged; all protected baseline tests pass. Scan for browser/server imports, Telegram, HTTP, credentials and binary/base64 state.
-
-Future implementation commands: mobile `npm test`, all three TZ test runs, `npm run typecheck`, `npm run lint`, `npx eslint .`, `npx expo install --check`, `npx expo-doctor`, `npm run export:ios`; root `npm run build`; `git diff --check`; protected hashes/diff and leakage scans. Report actual results and network/tool blockers. Preserve the three existing Calendar-test ESLint warnings without adding suppressions. Unit tests/export are not native acceptance.
-
-## 13. Proposed product-contract wording (do not edit those files now)
-
-No primary section or existing concept is removed. These clarifications are authorized by the user's product request, but the source contracts remain unchanged in this preparation task:
-
-- `MASTER_PROMPT.md:108`, “Salary schedule”: propose “Expected income schedules (including SalarySchedule), one-time expected income and explicitly recorded actual income.” SalarySchedule remains monthly and legacy IDs/values migrate explicitly; no API-compatible rename is asserted.
-- `MASTER_PROMPT.md:112`, fixed calculated allowance sentence: propose “The daily allowance is saved for each local date in AUTO or MANUAL mode. Expenses are tracked against it and never automatically rewrite it. Only an explicit confirmed change may replace today's allowance; a new local date establishes a new allowance.” This clarifies the fixed-period boundary and adds manual mode without weakening the invariant.
-- `tasks/mobile-migration.md:93–104`, Slice 6 implementation/acceptance block: propose “Implement one Finance tab with Overview, Operations and Obligations; current balance and primary currency; fixed daily allowance (AUTO/MANUAL); SalarySchedule-compatible expected income and one-time expectations; expense/income CRUD; payment/debt/receivable/purchase obligations; native local reminders. Accept only with versioned local persistence, lossless-or-blocked legacy conversion, no automatic allowance rewrite from operations, and Calendar-isolated reminder reconciliation under shared OS capacity.”
-
-Currency selection within Finance is a necessary Finance input, not implementation of general Slice 7 Settings. Extended native kinds/amount representation require the migration/adapter defined here; root wire contracts stay unchanged. No amendment to MASTER_PROMPT or tasks/mobile-migration is made by this brief.
-
-## 14. Native-device acceptance — PENDING until observed
-
-All previous slices' native acceptance remains pending. Finance requires actual iPhone observation of: first setup and locale decimal keyboard; keyboard-safe forms/scrolling; notched/Dynamic Island safe areas; large Dynamic Type/VoiceOver; long text and large/negative values; local midnight/foreground/travel updates; permission prompt/denial/provisional/Settings return; obligation notification scheduling/delivery/tap/cancel/edit/reopen while Calendar reminders coexist; native trigger timing across DST; app termination/restart and storage failure/disk-full behavior. No claimed bank balance accuracy, delivery guarantee, background execution or device success from mocks/export.
-
-Preparation deliverable is this document only. Finance implementation, source contract edits and native acceptance are not performed or claimed.
+This architecture task changes **only `tasks/current-task.md`**. It does not implement Slice 6B, modify mobile production code, change MASTER_PROMPT.md, claim native acceptance, deploy or commit.
