@@ -480,9 +480,10 @@ export function FinanceObligationSheet({
       <TextField
         label="Срок (необязательно, ГГГГ-ММ-ДД)"
         value={dueDate}
-        onChange={setDueDate}
+        onChange={(value) => { setDueDate(value); if (!value.trim()) setReminderEnabled(false); }}
         placeholder="2026-10-01"
       />
+      <AppText variant="meta" color="muted">Удаление срока выключает напоминание.</AppText>
       <Pressable
         accessibilityRole="switch"
         accessibilityState={{ checked: reminderEnabled }}
@@ -498,8 +499,8 @@ export function FinanceObligationSheet({
         <>
           <TextField label="Время (ЧЧ:ММ)" value={reminderTime} onChange={setReminderTime} />
           <AppText variant="meta" color="muted">
-            На экране блокировки будет видно название. Планирование уведомлений появится позже
-            (Slice 6B) — сейчас сохраняется только намерение.
+            На экране блокировки будет видно название. После сохранения проверьте статус
+            напоминания в разделе «Обязательства».
           </AppText>
         </>
       ) : null}

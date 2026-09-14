@@ -18,6 +18,8 @@ import type {
 import { formatFinanceDate } from './financeDates';
 import { formatMoneyMinor } from './financeMoney';
 import * as model from './financeModel';
+import type { FinanceNotificationState } from './financeNotificationController';
+import { financeReminderLabel } from './financeNotificationPresentation';
 import { OBLIGATION_KIND_LABELS } from './FinanceForms';
 
 /**
@@ -608,8 +610,10 @@ export function FinanceObligations({
   onEdit,
   onToggleCompleted,
   onDelete,
+  notifications,
 }: {
   snapshot: FinanceSnapshotV1;
+  notifications: FinanceNotificationState;
   currency: FinanceCurrency;
   showCompleted: boolean;
   onToggleList: () => void;
@@ -656,7 +660,7 @@ export function FinanceObligations({
             subtitle={[
               OBLIGATION_KIND_LABELS[obligation.kind],
               obligation.dueDate === undefined ? null : formatFinanceDate(obligation.dueDate),
-              obligation.reminderEnabled ? 'напоминание' : null,
+              financeReminderLabel(obligation, snapshot.revision, notifications),
             ]
               .filter((part) => part !== null)
               .join(' · ')}

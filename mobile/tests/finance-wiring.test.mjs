@@ -34,7 +34,7 @@ test('the store singleton is the only AsyncStorage/Crypto importer in the featur
   assert.deepEqual(importers, ['useFinanceStore.ts']);
 });
 
-test('Slice 6A does not schedule OS notifications for Finance (Slice 6B)', () => {
+test('Finance delegates native reminders to the notification runtime', () => {
   const files = readdirSync(new URL('../src/features/finance/', import.meta.url)).filter((name) =>
     name.endsWith('.ts') || name.endsWith('.tsx'),
   );
@@ -43,10 +43,12 @@ test('Slice 6A does not schedule OS notifications for Finance (Slice 6B)', () =>
     assert.equal(source.includes('expo-notifications'), false, `${name} must not use notifications`);
     assert.equal(source.includes('scheduleNotification'), false, `${name} must not schedule`);
   }
-  // Reminder INTENT is stored, and the UI says the scheduling is not active yet.
+  // Reminder intent remains domain data; native status comes from the runtime.
   const sheets = read('FinanceSheets.tsx');
   assert.match(sheets, /reminderEnabled/);
-  assert.match(sheets, /Slice 6B/);
+  assert.doesNotMatch(sheets, /появится позже|Slice 6B/);
+  assert.match(read('FinanceScreen.tsx'), /useFinanceNotifications/);
+  assert.match(sheets, /На экране блокировки будет видно название/);
 });
 
 test('no Finance file talks to the network, browser storage or the web API', () => {

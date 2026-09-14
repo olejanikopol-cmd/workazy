@@ -1860,3 +1860,173 @@ Finance sync, bank integration, deployment or commit.
 OS delivery, native trigger timing, permission presentation, cancellation on device
 or lock-screen/tap behavior. Existing device acceptance obligations remain pending.
 A separate review is still required; passing tests/export does not constitute REVIEW_OK.
+
+
+### Slice 6B.2 — Finance local notifications implemented; device acceptance pending
+
+Implemented from reviewed 6B.1 checkpoint
+`d32985d618838bfbbcbf58d1d4a16d517115314e`, starting with a clean worktree.
+The baseline run passed 488/488 before edits. Source/test hashes were captured in
+`/tmp/workazy-6b2-baseline-hashes.json` for comparison. This is an implementation and
+verification report, not a claim of independent REVIEW_OK or observed OS delivery.
+
+#### Runtime and product behavior
+
+Finance now schedules exactly one local `due` notification for an incomplete,
+enabled obligation with valid dueDate/time and a future schedulable local trigger.
+All four existing obligation kinds use namespace `workazy.finance.v1`, owner
+`workazy-finance-v1`, canonical ID `workazy.finance.v1:<obligationId>:due`.
+Ownership requires consistent owner, obligationId, kind and exact ID. Prefix
+lookalikes, Calendar IDs and foreign metadata cannot authorize Finance cancellation.
+The body is `Финансовое напоминание · <title>`; neither amount, note nor debt direction
+is added to content/data. The form warns that the title is visible on the lock screen.
+
+The Finance planner reuses Calendar wall-clock conversion: current device timezone,
+earlier autumn fold, no spring-gap normalization and no historical immediate alerts.
+Travel changes the resolved UTC target, not stored local intent. Native matching checks
+ID, ownership, fingerprint, actual title/body, target and decoded native trigger using
+unchanged Calendar tolerances. Finance also rejects a repeating native trigger when
+that flag is exposed. Unknown/unsupported times remain unscheduled with visible status.
+
+The reviewed 6B.1 process-global queue and schedule safety helper are reused without
+modification. Finance holds the queue for the complete pass, including native lists,
+cancellations, registry writes, scheduling, ambiguous-result recovery and verification.
+Capacity is 48 TOTAL, including Calendar and unknown requests. Existing other owners
+are never evicted. A losing domain remains unscheduled/capacity-limited until retry or
+later lifecycle refresh; there is no globally earliest-48 or background delivery promise.
+
+Finance registry key `workazy-native-finance-notifications-v1` is independent from
+Finance domain storage. Its strict V1 records carry identity, fingerprint, target,
+pending/scheduled/tombstone status, scheduling/verification context and timestamps.
+Records are validated before writes and frozen after publication. An absent key can
+recover positively owned native requests. Corrupt/unknown-version bytes are preserved,
+block Finance OS mutation and expose retry; the domain stays editable. Pre-schedule
+registry write failure prevents scheduling. Post-native registry write failure reports
+error and converges from native inventory on retry/restart without duplicating the ID.
+
+**Schema detail resolved during implementation:** a tombstone alone may have
+`targetTriggerAt: null` when a positively owned native orphan has corrupt/missing target
+metadata and there is no previous registry record. Pending/scheduled records still
+require a valid integer target. This explicitly represents unknown time rather than
+inventing a timestamp or permanently blocking cancellation of an identity-proven
+orphan. The tombstone is persisted before cancellation; native absence is confirmed
+before it is removed. Unknown ownership is never promoted by this exception.
+
+Committed obligation changes trigger the controller; a revision/timezone/generation
+change aborts stale work and reruns after releasing the queue. Data commits first and
+is never rolled back for a reminder failure. Notification code never changes balance,
+expenses, income or daily allowance. Completion retains 6A semantics: it disables
+reminder intent; ordinary reopen stays OFF. An explicitly configured reopened row
+schedules only if its trigger remains future. Removing dueDate visibly disables intent
+and clears persisted time through the existing form/model path.
+
+UI distinguishes configured/checking, scheduled (native-verified), off, permission,
+provisional quiet delivery, past, unavailable time, capacity and retryable error. Failed
+cancellation has a Finance-level warning even after the obligation row is deleted.
+Existing sheet identity/revision guards and domain save results remain independent.
+
+#### Expo boundary, permissions, lifecycle and taps
+
+`expoLocalNotifications.ts` is the ONLY Expo notification importer; the Calendar
+adapter is a compatibility facade with unchanged emitted owner/IDs/content/trigger
+fields. Shared permission requests use one explicit-request promise across domains;
+reads begun before a prompt cannot overwrite its newer result. No startup permission
+prompt. Denied state offers Settings; provisional state is labelled quiet. Shared
+permission completion/Settings foreground refreshes both controllers.
+
+Root owns one notification AppState listener and one active 60-second refresh timer,
+plus one foreground handler and response subscription. It hydrates both domains;
+Finance reminders do not require opening the Finance tab. Existing Finance UI day
+tracking is unchanged. Calendar keeps its existing controller, focus commands,
+permission presentation and today-marker behavior.
+
+Finance taps validate canonical ownership, await Finance hydration and check the live
+obligation before navigating to Finance/Obligations. A live target opens the existing
+obligation editor; a completed target selects completed history; missing/deleted shows
+the list. An existing unsaved sheet is retained until closed, then the target is
+revalidated. Navigation waits for root readiness. Warm/cold duplicate responses are
+deduplicated, consumed native responses are cleared, and a delayed cold-start response
+cannot override a newer live response. Calendar retains its existing default app-open
+behavior and is never interpreted as Finance. No inbox or notification action buttons.
+
+#### Exact source changes
+
+Paths below are relative to `mobile/`.
+
+| Kind | Files and purpose |
+| --- | --- |
+| New neutral boundary | `src/services/notifications/localNotificationContract.ts`, `expoLocalNotifications.ts`, `notificationPermissionCoordinator.ts`: shared native types/unchanged decoding, sole Expo binding and prompt single flight |
+| New Finance notification services | `src/services/notifications/financeNotificationContract.ts`, `financeNotificationPlanner.ts`, `financeNotificationReconciler.ts`, `financeNotificationRuntime.ts`: ownership/matcher, pure desired requests, convergence and native/storage dependency binding |
+| New registry | `src/storage/financeNotificationStorage.ts`: V1 types, strict parser and injected immutable registry factory |
+| New Finance feature files | `src/features/finance/financeNotificationController.ts`, `useFinanceNotifications.ts`, `financeNotificationPresentation.ts`, `FinanceNotificationStatus.tsx`: committed-state controller/subscription, labels and minimal permission/retry/status UI |
+| New lifecycle/routing | `src/services/notifications/useLocalNotificationLifecycle.ts`, `notificationResponseRouter.ts`, `financeNotificationNavigation.ts`: root fanout, validated owner dispatch and in-memory target intent |
+| Changed Finance UI | `src/features/finance/FinanceScreen.tsx`, `FinanceSections.tsx`, `FinanceSheets.tsx`: notification status/focus/tap target, row labels and explicit due-date/reminder clearing/privacy help |
+| Changed Finance type comments only | `src/types/finance.ts`: remove obsolete claim that native scheduling does not exist; no schema/domain field changes |
+| Changed Calendar production files (exactly three) | `src/services/notifications/calendarNotificationContract.ts`: compatible explicit re-exports of extracted neutral types/decoders; `expoCalendarNotifications.ts`: compatible facade over the one Expo boundary; `src/features/calendar/useCalendarLifecycle.ts`: expose existing controller/hooks, move root listeners/timer to neutral fanout |
+| Changed root | `app/_layout.tsx`: mount the shared notification lifecycle |
+| Tests | ADD `tests/finance-notifications.test.mjs`, `tests/local-notification-adapter.test.mjs`; narrowly update the obsolete deferral-copy assertion in `tests/finance-wiring.test.mjs` |
+
+Protected hash/diff comparison confirms NO changes to `localNotificationReconcileQueue.ts`,
+`localNotificationScheduleSafety.ts`, Calendar reconciler/coordinator/planner/store/schema,
+Calendar controller/Screen, Finance model/store/storage/aggregate/money/date/legacy code,
+Plans, Records/Journal/Ideas/media, or web/backend. Calendar owner/ID/start/advance,
+fingerprint/native verification, DST and registry compatibility remain protected by
+unchanged existing tests. No new dependency or package/configuration change; task brief
+and master contracts unchanged.
+
+#### Test quality and baseline comparison
+
+**537 tests pass: 488 baseline cases + 49 new 6B.2 cases.** Existing Calendar and
+6B.1 safety tests are byte-for-byte unchanged. The one necessary baseline wording
+update is explicit: Finance wiring formerly required the temporary “Slice 6B” deferred
+text. It now requires actual runtime wiring/privacy copy and absence of deferred text.
+Its no-direct-Expo scheduling, storage boundary, no-network/browser and pure migration
+assertions are retained. No baseline case was deleted or financial assertion weakened;
+it would be inaccurate to claim every baseline assertion was textually unchanged.
+
+New tests execute production planner, registry parser/factory, Finance reconciler,
+6B.1 queue/safety, controller, real Finance store/model, permission coordinator,
+response dispatcher and UI label helper. An adapter test transpiles/executes the real
+Expo adapter and Calendar facade with injected Expo calls, verifying payload/trigger
+readback and cross-facade single-flight permission requests rather than a copied adapter.
+
+Coverage includes all four kinds, one alert/idempotence, title/date/time replacement,
+disable/date removal/completion/deletion, configured future vs past reopen, no money
+changes, denied/provisional/Settings refresh, DST gap/fold/travel, native missing/registry
+missing, prewrite failure, post-native registry write failure, orphan cleanup including
+unknown target, corrupt registry, strict native identity/content/time/repetition matching,
+ambiguous insertion/retry under 47 foreign requests, 48-full capacity/refill, both
+Calendar-first and Finance-first gated contention against ONE native inventory,
+no cross-cancel/lookalikes, stale revisions during list/cancel/schedule/verification,
+startup subscriptions without a prompt, permission single flight and delayed reads,
+live/deleted taps after hydration/deduplication, and honest scheduled/quiet UI labels.
+Native rendering/lock-screen delivery is not proven by these injected tests.
+
+#### Verification — actual results
+
+| Check | Result |
+| --- | --- |
+| Before implementation `npm test` | 488 passed / 0 failed |
+| `npm test` after implementation | **537 passed / 0 failed** |
+| `TZ=Europe/Kyiv npm test` | 537 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 537 passed / 0 failed |
+| `TZ=UTC npm test` | 537 passed / 0 failed |
+| `npm run typecheck` | passed |
+| `npm run lint` | passed |
+| `npx eslint .` | 0 errors; same 3 pre-existing Calendar-test warnings |
+| `npx expo install --check` | dependencies up to date (network-enabled check) |
+| `npx --yes expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | passed; exported `dist` |
+| root `npm run build` | passed; sites artifact verified |
+| `git diff --check` | passed |
+| Ownership/capacity/security/scope scans | single Expo boundary; no new HTTP/browser/Telegram/cloud/bank/secret runtime; strict Finance ownership; reviewed queue/safety and protected domains unchanged |
+
+Session logs: `/tmp/workazy-6b2-*.log`; hash baseline is a temporary review aid, not a
+committed artifact. No build/export output is treated as native evidence.
+
+**Native/iPhone acceptance remains PENDING:** actual permission prompt/denial/provisional,
+delivery, timing, edit/reschedule, completion/delete cancellation, tap navigation and
+unsaved-sheet behavior, coexistence with Calendar, timezone/DST/restart, capacity/retry,
+keyboard/safe-area/VoiceOver/large-text rendering require device observation. No delivery
+guarantee, server reminders, remote push, Telegram, HTTP Finance sync, bank/Monobank,
+cloud scheduling, Slice 7, deployment or commit. Stop after Slice 6B.2 for review.

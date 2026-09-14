@@ -87,8 +87,7 @@ export type FinanceObligation = {
   /** Optional local wall-clock reminder time HH:MM. */
   reminderTime?: string;
   /**
-   * Reminder INTENT only in Slice 6A: no OS notification is scheduled or reconciled
-   * for Finance yet (deferred to Slice 6B).
+   * Reminder intent; native scheduling status is stored separately from Finance data.
    */
   reminderEnabled: boolean;
   completed: boolean;

@@ -3,10 +3,13 @@
  * Обзор / Операции / Обязательства. All state comes from the native Finance store;
  * every command is revision-guarded and persists before it commits.
  *
- * Obligation NOTIFICATION SCHEDULING is intentionally NOT implemented here: Slice 6A
- * stores reminder intent only (scheduling is deferred to Slice 6B).
+ * Notification status is independent from Finance persistence and sheet submissions.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useFinanceNotifications, financeNotificationController } from './useFinanceNotifications';
+import FinanceNotificationStatus from './FinanceNotificationStatus';
+import { financeNotificationNavigation } from '@/services/notifications/financeNotificationNavigation';
 import { Pressable, StyleSheet, View } from 'react-native';
 import AppText from '@/components/AppText';
 import Screen from '@/components/Screen';
@@ -81,6 +84,9 @@ const REASON_TEXT: Record<string, string> = {
 
 export default function FinanceScreen() {
   const state = useFinanceStore();
+  const notifications = useFinanceNotifications();
+  const notificationIntent = useSyncExternalStore(financeNotificationNavigation.subscribe, financeNotificationNavigation.getSnapshot);
+  useFocusEffect(useCallback(() => { void financeNotificationController.request(); }, []));
   const snapshot = state.snapshot;
   const { today, refresh: refreshDay } = useFinanceToday();
   const [segment, setSegment] = useState<Segment>('overview');
@@ -122,13 +128,31 @@ export default function FinanceScreen() {
     void financeStore.load();
   }, []);
 
+  useEffect(() => {
+    // Consume external navigation after this render; never replace an open draft.
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled || !notificationIntent || state.phase !== 'ready' || sheet.kind !== 'none') return;
+      const target = snapshot.obligations.find((row) => row.id === notificationIntent.obligationId);
+      setSegment('obligations');
+      setShowCompleted(target?.completed ?? false);
+      if (target) {
+        const instance = registryRef.current.open(target.id, snapshot.revision);
+        setSheetInstance(instance);
+        setSheet({ kind: 'obligation-edit', obligation: target });
+      }
+      financeNotificationNavigation.clear(notificationIntent.token);
+    });
+    return () => { cancelled = true; };
+  }, [notificationIntent, state.phase, snapshot.obligations, snapshot.revision, sheet.kind]);
+
   // Day establishment: every Finance focus samples the local clock and a missing
   // snapshot is written from the committed state BEFORE the limit is shown.
   useEffect(() => {
-    if (state.phase !== 'ready' || !snapshot.initialized || sheet.kind !== 'none') return;
+    if (state.phase !== 'ready' || !snapshot.initialized || sheet.kind !== 'none' || notificationIntent) return;
     if (today !== localDateIso(new Date())) { refreshDay(); return; }
     void financeStore.ensureDay(today);
-  }, [state.phase, snapshot.initialized, snapshot.revision, today, sheet.kind, refreshDay]);
+  }, [state.phase, snapshot.initialized, snapshot.revision, today, sheet.kind, refreshDay, notificationIntent]);
 
   /**
   "   * Async completion of ONE sheet instance: a newer sheet stays open and untouched,
@@ -255,6 +279,7 @@ export default function FinanceScreen() {
           </AppText>
         </View>
       )}
+      <FinanceNotificationStatus state={notifications} />
       <SegmentedControl
         items={[
           { value: 'overview', label: 'Обзор' },
@@ -393,6 +418,7 @@ export default function FinanceScreen() {
 
       {segment === 'obligations' ? (
         <FinanceObligations
+          notifications={notifications}
           snapshot={snapshot}
           currency={currency}
           showCompleted={showCompleted}
