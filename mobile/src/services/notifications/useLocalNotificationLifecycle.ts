@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
+import { onboardingVisible } from '@/features/product/onboardingStore';
+import { onboardingStore } from '@/features/product/productRuntime';
 import { AppState } from 'react-native';
 import { router, useRootNavigationState } from 'expo-router';
 import { calendarNotificationController } from '@/features/calendar/useCalendarLifecycle';
@@ -7,27 +9,31 @@ import { financeStore } from '@/features/finance/useFinanceStore';
 import { financeNotificationController } from './financeNotificationRuntime';
 import { notificationPermissions, notificationResponses, registerForegroundNotificationHandler } from './expoLocalNotifications';
 import { createNotificationResponseRouter, type LocalNotificationResponse } from './notificationResponseRouter';
+import { calendarNotificationNavigation } from './calendarNotificationNavigation';
 import { financeNotificationNavigation } from './financeNotificationNavigation';
 export function useLocalNotificationLifecycle() {
   const navigation = useRootNavigationState();
+  const onboarding = useSyncExternalStore(onboardingStore.subscribe, onboardingStore.getSnapshot);
+  const mayNavigate = !onboardingVisible(onboarding);
   const ready = useRef(false);
-  const pending = useRef<string | null | undefined>(undefined);
-  const open = useCallback((id: string | null) => {
-    if (!ready.current) { pending.current = id; return; }
-    financeNotificationNavigation.target(id);
-    router.navigate('/(tabs)/finance');
+  const pending = useRef<{ domain: 'finance' | 'calendar'; id: string | null } | undefined>(undefined);
+  const open = useCallback((id: string | null, domain: 'finance' | 'calendar' = 'finance') => {
+    if (!ready.current) { pending.current = { domain, id }; return; }
+    if (domain === 'calendar') { calendarNotificationNavigation.target(id); router.navigate('/(tabs)/calendar'); }
+    else { financeNotificationNavigation.target(id); router.navigate('/(tabs)/finance'); }
   }, []);
   useEffect(() => {
-    ready.current = Boolean(navigation?.key);
-    if (navigation?.key && pending.current !== undefined) {
-      const id = pending.current; pending.current = undefined; open(id);
+    ready.current = Boolean(navigation?.key) && mayNavigate;
+    if (ready.current && pending.current !== undefined) {
+      const target = pending.current; pending.current = undefined; open(target.id, target.domain);
     }
-  }, [navigation?.key, open]);
+  }, [navigation?.key, mayNavigate, open]);
   useEffect(() => {
     let alive = true;
     registerForegroundNotificationHandler();
     const dispatch = createNotificationResponseRouter({ load: financeStore.load, getState: financeStore.getSnapshot,
-      openFinance: (id) => { if (alive) open(id); } });
+      openFinance: (id) => { if (alive) open(id); },
+      calendar: { load: calendarStore.load, getState: calendarStore.getSnapshot, open: (id) => { if (alive) open(id, 'calendar'); } } });
     let receivedLive = false;
     const receive = (r: LocalNotificationResponse) => {
       if (alive) void dispatch(r).then(() => {

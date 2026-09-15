@@ -19,6 +19,7 @@ import { formatFinanceDate } from './financeDates';
 import { formatMoneyMinor } from './financeMoney';
 import * as model from './financeModel';
 import type { FinanceNotificationState } from './financeNotificationController';
+import ConfirmDeleteButton from '@/components/ConfirmDeleteButton';
 import { financeReminderLabel } from './financeNotificationPresentation';
 import { OBLIGATION_KIND_LABELS } from './FinanceForms';
 
@@ -313,12 +314,12 @@ export function FinanceExpectationsCard({
       <View style={styles.row}>
         <AppText variant="label">Ожидаемые доходы</AppText>
         <View style={styles.actionsRow}>
-          <Pressable accessibilityRole="button" onPress={onAddSchedule}>
+          <Pressable accessibilityRole="button" style={styles.textAction} onPress={onAddSchedule}>
             <AppText variant="label" color="accent">
               + месяц
             </AppText>
           </Pressable>
-          <Pressable accessibilityRole="button" onPress={onAddExpectation}>
+          <Pressable accessibilityRole="button" style={styles.textAction} onPress={onAddExpectation}>
             <AppText variant="label" color="accent">
               + разовое
             </AppText>
@@ -376,7 +377,7 @@ export function FinanceExpectationsCard({
                     {occurrence.resolved === null ? (
                       <>
                         <Pressable
-                          accessibilityRole="button"
+                          accessibilityRole="button" style={styles.textAction}
                           onPress={() =>
                             onReceiveOccurrence({
                               scheduleId: occurrence.scheduleId,
@@ -391,7 +392,7 @@ export function FinanceExpectationsCard({
                           </AppText>
                         </Pressable>
                         <Pressable
-                          accessibilityRole="button"
+                          accessibilityRole="button" style={styles.textAction}
                           onPress={() =>
                             onSkipOccurrence({
                               scheduleId: occurrence.scheduleId,
@@ -406,7 +407,7 @@ export function FinanceExpectationsCard({
                       </>
                     ) : occurrence.resolved?.resolution === 'skipped' ? (
                       <Pressable
-                        accessibilityRole="button"
+                        accessibilityRole="button" style={styles.textAction}
                         onPress={() =>
                           onReopenOccurrence({
                             scheduleId: occurrence.scheduleId,
@@ -424,11 +425,7 @@ export function FinanceExpectationsCard({
               );
             })}
             <View style={styles.actionsRow}>
-              <Pressable accessibilityRole="button" onPress={() => onDeleteSchedule(schedule)}>
-                <AppText variant="meta" color="muted">
-                  Удалить ожидание (чеки останутся)
-                </AppText>
-              </Pressable>
+              <ConfirmDeleteButton label="Удалить ожидание (чеки останутся)" description="Ожидание будет удалено. Уже записанные доходы останутся." onConfirm={() => onDeleteSchedule(schedule)} />
             </View>
           </View>
         );
@@ -454,7 +451,7 @@ export function FinanceExpectationsCard({
               {resolved === undefined ? (
                 <>
                   <Pressable
-                    accessibilityRole="button"
+                    accessibilityRole="button" style={styles.textAction}
                     onPress={() => onReceiveExpectation(expectation)}
                   >
                     <AppText variant="meta" color="success">
@@ -462,7 +459,7 @@ export function FinanceExpectationsCard({
                     </AppText>
                   </Pressable>
                   <Pressable
-                    accessibilityRole="button"
+                    accessibilityRole="button" style={styles.textAction}
                     onPress={() => onSkipExpectation(expectation)}
                   >
                     <AppText variant="meta" color="muted">
@@ -472,7 +469,7 @@ export function FinanceExpectationsCard({
                 </>
               ) : resolved === 'skipped' ? (
                 <Pressable
-                  accessibilityRole="button"
+                  accessibilityRole="button" style={styles.textAction}
                   onPress={() => onReopenExpectation(expectation)}
                 >
                   <AppText variant="meta" color="accent">
@@ -480,14 +477,7 @@ export function FinanceExpectationsCard({
                   </AppText>
                 </Pressable>
               ) : null}
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => onDeleteExpectation(expectation)}
-              >
-                <AppText variant="meta" color="muted">
-                  Удалить ожидание
-                </AppText>
-              </Pressable>
+              <ConfirmDeleteButton label="Удалить ожидание" description="Ожидание будет удалено. Уже записанный доход останется." onConfirm={() => onDeleteExpectation(expectation)} />
             </View>
           </View>
         );
@@ -539,7 +529,7 @@ export function FinanceOperations({
     <Card style={styles.card}>
       <View style={styles.row}>
         <AppText variant="label">{formatFinanceDate(selectedDate)}</AppText>
-        <Pressable accessibilityRole="button" onPress={onClearFilter}>
+        <Pressable accessibilityRole="button" style={styles.textAction} onPress={onClearFilter}>
           <AppText variant="meta" color="accent">
             Все дни
           </AppText>
@@ -551,7 +541,7 @@ export function FinanceOperations({
       </AppText>
       <View style={styles.actionsRow}>
         {(['all', 'expense', 'income'] as const).map((value) => (
-          <Pressable key={value} accessibilityRole="button" onPress={() => onFilter(value)}>
+          <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: filter === value }} style={[styles.textAction, filter === value && styles.selectedAction]} onPress={() => onFilter(value)}>
             <AppText variant="meta" color={filter === value ? 'accent' : 'muted'}>
               {value === 'all' ? 'Все' : value === 'expense' ? 'Расходы' : 'Доходы'}
             </AppText>
@@ -590,11 +580,7 @@ export function FinanceOperations({
             valueTone={row.kind === 'expense' ? 'danger' : 'success'}
             onPress={() => onEdit(row.expense, row.income)}
           />
-          <Pressable accessibilityRole="button" onPress={() => onDelete(row.expense, row.income)}>
-            <AppText variant="meta" color="muted">
-              Удалить
-            </AppText>
-          </Pressable>
+          <ConfirmDeleteButton label="Удалить" description="Операция будет удалена с учётом её влияния на баланс. Сохранённый лимит дня не изменится." onConfirm={() => onDelete(row.expense, row.income)} />
         </View>
       ))}
     </Card>
@@ -638,7 +624,7 @@ export function FinanceObligations({
     <Card style={styles.card}>
       <View style={styles.row}>
         <AppText variant="label">{showCompleted ? 'Выполненные' : 'Открытые'}</AppText>
-        <Pressable accessibilityRole="button" onPress={onToggleList}>
+        <Pressable accessibilityRole="button" style={styles.textAction} onPress={onToggleList}>
           <AppText variant="meta" color="accent">
             {showCompleted ? 'Показать открытые' : 'Показать выполненные'}
           </AppText>
@@ -668,16 +654,12 @@ export function FinanceObligations({
             onPress={() => onEdit(obligation)}
           />
           <View style={styles.actionsRow}>
-            <Pressable accessibilityRole="button" onPress={() => onToggleCompleted(obligation)}>
+            <Pressable accessibilityRole="button" style={styles.textAction} onPress={() => onToggleCompleted(obligation)}>
               <AppText variant="meta" color="success">
                 {obligation.completed ? 'Вернуть в работу' : 'Отметить выполненным'}
               </AppText>
             </Pressable>
-            <Pressable accessibilityRole="button" onPress={() => onDelete(obligation)}>
-              <AppText variant="meta" color="muted">
-                Удалить
-              </AppText>
-            </Pressable>
+            <ConfirmDeleteButton label="Удалить" description="Обязательство будет удалено. Баланс не изменится. Если отмена напоминания не удастся, приложение покажет ошибку." onConfirm={() => onDelete(obligation)} />
           </View>
         </View>
       ))}
@@ -686,6 +668,8 @@ export function FinanceObligations({
 }
 
 const styles = StyleSheet.create({
+  selectedAction: { borderBottomWidth: 2, borderBottomColor: colors.accent },
+  textAction: { minHeight: touchTarget, minWidth: touchTarget, justifyContent: 'center' },
   card: { gap: spacing.md },
   row: {
     flexDirection: 'row',

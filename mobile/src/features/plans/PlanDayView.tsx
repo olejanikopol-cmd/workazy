@@ -14,6 +14,7 @@ import { colors, radius, spacing, touchTarget } from '@/theme';
 import type { PlanTask } from '@/types/plan';
 import PlanItemRow from './PlanItemRow';
 import PlanItemSheet from './PlanItemSheet';
+import PlanDateSheet from './PlanDateSheet';
 import { dayProgress, tasksForDate } from './planModel';
 import { formatFullDate, formatPlanDay } from './planDates';
 import { closeSheetIfSame } from './planSheetGuard';
@@ -27,6 +28,7 @@ type SheetState =
 const DATE_SEGMENTS = [
   { value: 'today', label: 'Сегодня' },
   { value: 'tomorrow', label: 'Завтра' },
+  { value: 'selected', label: 'Дата' },
 ] as const;
 
 type PlanDayViewProps = {
@@ -44,6 +46,7 @@ export default function PlanDayView({ day }: PlanDayViewProps) {
   const state = usePlanStore();
   const [sheet, setSheet] = useState<SheetState | null>(null);
   const { mode, setMode, date, today, tomorrow } = day;
+  const [datePicker, setDatePicker] = useState<string | null>(null);
 
   useEffect(() => {
     void planStore.load();
@@ -97,7 +100,7 @@ export default function PlanDayView({ day }: PlanDayViewProps) {
         <View style={styles.titleCopy}>
           <AppText variant="section">{formatPlanDay(date, today, tomorrow)}</AppText>
           <AppText variant="meta" color="muted">
-            {formatFullDate(date)}
+            {formatFullDate(date)}{mode === 'selected' ? ` · ${date}` : ''}
           </AppText>
         </View>
         <View
@@ -117,7 +120,10 @@ export default function PlanDayView({ day }: PlanDayViewProps) {
       <SegmentedControl<PlanDay['mode']>
         items={DATE_SEGMENTS}
         value={mode}
-        onChange={setMode}
+        onChange={(next) => {
+          if (next === 'selected') setDatePicker(date);
+          else setMode(next);
+        }}
       />
 
       <View
@@ -182,6 +188,15 @@ return (
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
       />
+      {datePicker !== null ? (
+        <PlanDateSheet
+          initialDate={datePicker}
+          onClose={() => setDatePicker(null)}
+          onSelect={(value) => {
+            if (day.selectDate(value)) setDatePicker(null);
+          }}
+        />
+      ) : null}
       {sheet ? (
         <PlanItemSheet
           key={sheet.key}

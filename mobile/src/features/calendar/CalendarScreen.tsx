@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useFocusEffect } from 'expo-router';
 import {
   ActivityIndicator,
@@ -10,6 +10,7 @@ import {
   View,
   type ListRenderItemInfo,
 } from 'react-native';
+import { calendarNotificationNavigation, resolveCalendarTap } from '@/services/notifications/calendarNotificationNavigation';
 import AppText from '@/components/AppText';
 import Screen from '@/components/Screen';
 import { colors, radius, spacing, touchTarget } from '@/theme';
@@ -53,6 +54,7 @@ function todayParts(): { year: number; month: number; date: string } {
  */
 export default function CalendarScreen() {
   const state = useCalendarStore();
+  const intent = useSyncExternalStore(calendarNotificationNavigation.subscribe, calendarNotificationNavigation.getSnapshot);
   const notifications = useCalendarNotifications();
   const today = useCalendarToday();
   const [view, setView] = useState(() => {
@@ -72,6 +74,25 @@ export default function CalendarScreen() {
   useEffect(() => {
     sheetRef.current = sheet;
   }, [sheet]);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      const result = resolveCalendarTap(intent, state.phase, sheetRef.current !== null, state.events);
+      if (!result.consume || !intent) return;
+      if (result.event) {
+        const event = result.event;
+        const [year, month] = event.date.split('-').map(Number);
+        setView({ year, month: month - 1, selectedDate: event.date });
+        const next: SheetState = { key: `notification-${intent.token}`, mode: 'read', itemId: event.id };
+        sheetRef.current = next;
+        setSheet(next);
+      }
+      calendarNotificationNavigation.clear(intent.token);
+    });
+    return () => { cancelled = true; };
+  }, [intent, state.phase, state.events, sheet]);
 
   // On focus: refresh the today marker and reconcile the latest committed state
   // (notification state may be stale after time in another tab/background).

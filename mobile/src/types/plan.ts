@@ -2,8 +2,8 @@
  * Daily plan domain types for the native app.
  *
  * Compatible with repository `lib/types.ts`; no runtime import from the web app.
- * Mirrors only the Plan-task shape; Assignment/Goal semantics stay outside this
- * feature (Tasks/Goals CRUD is a later slice).
+ * Mirrors only the daily Plan-item shape. Standalone Assignment semantics stay
+ * outside the native product; Goals use their own native domain and store.
  */
 export type PlanTask = {
   id: string;

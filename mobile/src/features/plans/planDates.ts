@@ -6,7 +6,7 @@
  * across DST/leap/month/year boundaries we use calendar arithmetic on `Date`
  * (`setDate`), never `toISOString().slice(0, 10)` and never `+ 86_400_000`.
  */
-export type PlanDay = 'today' | 'tomorrow';
+export type PlanDay = 'today' | 'tomorrow' | 'selected';
 
 /**
  * Lowest supported calendar year. Year 0000 is rejected everywhere (see
@@ -21,12 +21,12 @@ export function localDateIso(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return `${String(year).padStart(4, '0')}-${month}-${day}`;
 }
 
 /** Today/tomorrow as local calendar dates for the given instant. */
 export function getPlanDates(now: Date): { today: string; tomorrow: string } {
-  const tomorrowDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrowDate = localDateFromParts(now.getFullYear(), now.getMonth() + 1, now.getDate());
   tomorrowDate.setDate(tomorrowDate.getDate() + 1);
   return { today: localDateIso(now), tomorrow: localDateIso(tomorrowDate) };
 }
@@ -109,7 +109,12 @@ export function dateForMode(
   mode: PlanDay,
   today: string,
   tomorrow: string,
+  selectedDate?: string,
 ): string {
+  if (mode === 'selected') {
+    if (!selectedDate || !isValidIsoDate(selectedDate)) throw new Error('Invalid selected Plan date');
+    return selectedDate;
+  }
   return mode === 'today' ? today : tomorrow;
 }
 

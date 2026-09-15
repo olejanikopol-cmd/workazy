@@ -4,12 +4,14 @@ Native iPhone client for **Workazy**, a personal planner (планы, кален
 финансы). This is an independent Expo (SDK 57) + React Native + TypeScript application
 using **Expo Router**. No WebView, no Telegram, no browser storage, no web imports.
 
-Slices 1–2 delivered the scaffold, dark theme, four-tab navigation, and the daily
-plan (Планы → План) with durable AsyncStorage persistence. **Slice 3** adds the
-Calendar tab: Monday-first month grid, selected-day agenda, local CalendarEvent CRUD,
-and native local reminders via `expo-notifications`. **Slice 5** adds real native
-journal audio/video recording, local playback and offline media durability inside
-the Records tab (bounded local branch: no upload, no sync, no transcription yet).
+The final native Plans product is **План | Цели**. Standalone Tasks/Assignments were
+removed from the mobile contract by product decision; legacy web/backend Assignment
+types and data remain untouched.
+
+The required native feature set is code-complete: daily Plan and Goals, Calendar,
+Journal with local audio/video, Ideas, Finance, local Calendar/Finance reminders,
+onboarding and Settings. Data remains local to the installation. Real iPhone
+acceptance is tracked separately in `NATIVE_ACCEPTANCE.md` and remains pending.
 
 ## Requirements
 
@@ -43,10 +45,10 @@ npm run export:ios # expo export --platform ios  → writes dist/
 | Route | Destination |
 | --- | --- |
 | `/` | redirects to `/(tabs)/plans` |
-| `/(tabs)/plans` | **Планы** — План (functional daily plan) / Задания / Цели |
+| `/(tabs)/plans` | **Планы** — План (functional daily plan) / Цели (week/month/year) |
 | `/(tabs)/calendar` | **Календарь** — month grid + selected-day agenda (Slice 3) |
 | `/(tabs)/records` | **Записи** — Дневник (Новая запись / История) и Идеи (фильтры) |
-| `/(tabs)/finance` | **Финансы** section shell |
+| `/(tabs)/finance` | **Финансы** — Overview / Operations / Obligations |
 | any other | `+not-found` screen with a return-to-Plans action |
 
 Root `app/_layout.tsx` owns the dark navigation theme, stack, and the calendar
@@ -620,7 +622,9 @@ controller, repository, coordinator and journal store used by the UI are covered
   on this device (`workazy-native-journal-v1` / `workazy-native-ideas-v1`). No
   cloud sync, no auth and no conflict resolution exist; the app never fabricates a
   connected-cloud state.
-- Tasks/Goals CRUD, Finance and later slices remain unimplemented.
+- Goals use their own strict versioned local store (`workazy-native-goals-v1`) and
+  support weekly/monthly/yearly CRUD, explicit progress and complete/reopen behavior.
+- Standalone Tasks/Assignments are intentionally not part of the native product.
 
 ## Visual references
 
@@ -628,7 +632,7 @@ Visual source of truth is the screenshot set in the repository at `references/`
 (copied from the harness bundle `/Users/oleh/Downloads/workazy-mobile-harness/references/`).
 The harness bundle must be available on this machine for a visual pass.
 
-## Current limitations (Slices 1–5)
+## Current limitations
 
 - Data is local to this installation; no export/import or web-data migration yet.
 - Notification delivery is OS/subject to user settings; scheduled OS inventory is
@@ -674,9 +678,9 @@ The harness bundle must be available on this machine for a visual pass.
   banner/sound delivery, datetimepicker interactions, long-editor keyboard/
   scroll/caret behavior, Dynamic Type/VoiceOver with a large journal entry, and
   on-device restart convergence are **not yet verified** on the implementation
-  machine (only Xcode CommandLineTools installed; no simulator). The Slice 5
+  machine (only Xcode CommandLineTools installed; no simulator). Native
   camera/microphone prompts, physical capture, playback, file/container checks and
   limit auto-stop are likewise **pending** real-device verification. Unit tests
   and an Expo export do not prove camera, microphone or playback behavior. Do not
-  treat Slices 1–5 as passed until native evidence exists. See `MIGRATION_STATUS.md`
+  treat device acceptance as passed until native evidence exists. See `MIGRATION_STATUS.md`
   for exact status.

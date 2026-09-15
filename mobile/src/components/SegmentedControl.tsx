@@ -70,6 +70,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
   },
   itemSelected: {
     backgroundColor: colors.surfaceSelected,

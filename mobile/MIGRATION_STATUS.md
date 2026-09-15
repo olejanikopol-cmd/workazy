@@ -1,6 +1,14 @@
 # Workazy Mobile — Migration Status
 
-Updated: 2026-09-10 — Slice 3 (Calendar + local notifications); Slices 1–2 complete
+Updated: 2026-09-14 — all required native features code-complete; iPhone acceptance pending
+
+## Current final native product contract
+
+Plans is exactly **Plan | Goals**. Standalone Tasks/Assignments were removed from
+the native product by explicit product decision; legacy web/backend Assignment types
+and data remain untouched. Goals is a real local week/month/year feature. Historical
+slice notes below describe the implementation state at those checkpoints and do not
+restore Tasks to the current native contract.
 
 ## Audit decisions and selected versions
 
@@ -22,7 +30,7 @@ Updated: 2026-09-10 — Slice 3 (Calendar + local notifications); Slices 1–2 c
 ## Reused concepts vs. deferred code (Slice 1)
 
 Reused **concepts** (not code — no web imports in native runtime):
-- Product section inventory: Plans (Plan/Tasks/Goals), Calendar, Records (Journal/Ideas), Finance.
+- Current product inventory: Plans (Plan/Goals), Calendar, Records (Journal/Ideas), Finance.
 - Domain names preserved from `lib/types.ts` (PlanTask, Assignment, Goal, JournalEntry, JournalMedia,
   CalendarEvent, Idea, FinanceState/Expense/Obligation/SalarySchedule). No type copying needed yet.
 - Visual tokens derived from `app/globals.css` and `/references` (see `src/theme/`).
@@ -73,7 +81,8 @@ saved; persistence/API access, onboarding, notifications and media remain unimpl
   group with exactly four tabs: **Планы / Календарь / Записи / Финансы** (IDs
   `plans`, `calendar`, `records`, `finance`). Stable `Tabs` from `expo-router`
   (in-layout bar, surface background, hairline top border, rounded top corners).
-- Plans segmented switch **План / Задания / Цели** (initial `plan`) and Records
+- Historical Slice 1 scaffold used **План / Задания / Цели**; the final product
+  supersedes it with **План / Цели**. Records keeps
   switch **Дневник / Идеи** (initial `journal`); selection kept in local component
   state and persists across tab switches during the session.
 - Theme tokens in `src/theme/` exactly per brief: `background #08090C`, `surface
@@ -120,14 +129,14 @@ Environment notes:
 ## Verified status (Slice 2) — daily plan + native persistence, 2026-09-10
 
 **Implemented:** one complete local daily-plan flow inside Планы → План, per the
-Slice-2 brief in `tasks/current-task.md`. Tasks/Goals keep honest shells; no other
+historical Slice-2 brief. At that checkpoint Tasks/Goals kept honest shells; no other
 domain was touched. Slice-1 foundation (routes, P1 fix, theme, components) preserved.
 
 ### Domain / data decisions
 
 - Mirrored only the web `PlanTask` shape (`id, title, completed, date, createdAt?,
   updatedAt?`) into `src/types/plan.ts`. No `Assignment.description/dueDate`, no
-  persisted numbers, no `position`. Assignment/Goal CRUD is deferred.
+  persisted numbers, no `position`. Assignment/Goal CRUD was deferred at that checkpoint.
 - One ordered `tasks` array across all dates in key `workazy-native-plan-v1`
   (envelope `{ version: 1, tasks, savedAt }`; the key is distinct from the web
   storage key and the web snapshot is never imported).
@@ -160,7 +169,7 @@ Created: `src/types/plan.ts`, `src/storage/planStorage.ts`,
 `src/features/plans/{planModel,planDates,planStore,usePlanStore,usePlanDay,PlanDayView,PlanItemRow,PlanItemSheet}.ts(x)`,
 `tests/{plan-model,plan-dates,plan-store}.test.mjs`.
 Changed (allowed list only): `src/features/plans/PlansScreen.tsx` (wire Plan segment
-to `PlanDayView`, keep Tasks/Goals shells), `package.json` + `package-lock.json`
+to `PlanDayView`, with the then-current Tasks/Goals shells), `package.json` + `package-lock.json`
 (`@react-native-async-storage/async-storage@2.2.0`, `expo-crypto@~57.0.2`,
 `tsx` devDep, `test` script), `README.md`, this file. No route files,
 shared components/theme, app.json, root/web files were changed.
@@ -196,11 +205,11 @@ month/year/leap/DST/local-vs-UTC-midnight under Kyiv and Los_Angeles.
 Fixes applied after the Codex review of the Slice 2 pass:
 
 1. **Plans selector always visible + day state preserved across segments.**
-   `PlansScreen` now renders the План / Задания / Цели segmented control above the
+   At this historical checkpoint `PlansScreen` rendered План / Задания / Цели above the
    content in every segment (including План), and owns the relative Today/Tomorrow
    hook (`usePlanDay`) itself, passing it into `PlanDayView`. Switching segments no
    longer unmounts the relative-day state, so a selected day survives
-   План → Задания → План. `PlanDayView` consumes the day via a `day` prop
+   План → Задания → План. The final product later removed Задания. `PlanDayView` consumes the day via a `day` prop
    (`PlanDay`), `PlanDay`/`PlanDayMode` type names aligned in `planDates.ts`, and
    the relative date is computed through a new pure `dateForMode()` helper.
 2. **No lost edits during save / stale save completions.**
@@ -1623,7 +1632,7 @@ scheduler or timezone defaults, web journal trim/tag/mood/search semantics and t
 live Ideas labels/statuses/moods from `app/secondary-screens.tsx`, plus the journal
 search provenance (`entrySearchText`) without importing the browser module.
 
-Deferred (later slices, not stubbed): Tasks/Goals CRUD, historical-date/history UI,
+Deferred at this historical checkpoint: Tasks/Goals CRUD, historical-date/history UI,
 moving a plan item to another date, export/import and web-data migration, API
 client and credentials, onboarding, settings UI, system-calendar integration,
 recurrence, media recording/upload/transcription/playback, finance feature code,
@@ -2030,3 +2039,267 @@ unsaved-sheet behavior, coexistence with Calendar, timezone/DST/restart, capacit
 keyboard/safe-area/VoiceOver/large-text rendering require device observation. No delivery
 guarantee, server reminders, remote push, Telegram, HTTP Finance sync, bank/Monobank,
 cloud scheduling, Slice 7, deployment or commit. Stop after Slice 6B.2 for review.
+
+## Slice 7 — architecture and implementation in progress (2026-09-14)
+
+Baseline: Slice 6 re-review REVIEW_OK, checkpoint `8e660a8`, 537 tests.
+Existing Slice 6 code is preserved. Scope: first-launch onboarding, minimal stack Settings,
+product copy/accessibility/empty-state corrections, Calendar notification target
+routing, documentation and native acceptance preparation. No domain migrations,
+money changes, notification scheduling/queue changes, media changes or new backend.
+
+Onboarding uses a separate strict versioned preference key and persist-before-close.
+Replay is session UI only and does not reset that key or any domain. Root modal
+covers initial navigation (including notification taps) without replacing its target.
+Settings opens from Plans, uses the existing shared permission coordinator, never
+prompts automatically, and reports local media/storage behavior accurately.
+Calendar tap routing is new in this slice, as explicitly requested; scheduling,
+identity, registry and Finance routing remain protected. Live targets are resolved
+after hydration and again after any open draft closes.
+
+Historical Slice 7 audit: Tasks and Goals were deferred panels at that checkpoint.
+The final product decision below removes standalone Tasks from native and implements
+Goals. Native/iPhone acceptance remains PENDING.
+
+### Slice 7 — implemented result
+
+**CODE COMPLETE for the bounded Slice 7 changes below. NATIVE DEVICE ACCEPTANCE
+PENDING.** The later final completion fix supersedes the Tasks/Goals gap described at
+this checkpoint: standalone Tasks left the native contract and Goals was implemented.
+
+#### Product behavior
+
+- First-launch native onboarding: four short pages, numeric progress, Back,
+  Continue, Skip and Start. No automatic permission prompts or seeded data.
+  Completion is persisted before dismissal; restart skips completed onboarding.
+  Write failure preserves the visible flow and offers retry. Corrupt/read-failed
+  preferences are never reset: Retry or session-only continuation is available.
+  Replay from Settings is in-memory and never resets user data or completion.
+- One Settings stack route, reached by the labelled 44pt Plans icon; four tabs
+  retained. Permission read/request/error/retry, system Settings guidance, replay,
+  About and actual version/build if available. No account, cloud, AI, subscription,
+  theme, debug or per-obligation settings duplication.
+- Privacy copy reflects actual local AsyncStorage records and local journal media
+  files, no mobile upload/transcription/sync, possible loss on uninstall and no
+  in-app backup. Explains title disclosure and device-dependent notification
+  delivery without encryption/no-data-received guarantees. Telegram is mentioned
+  only to explain that the mobile application does not need it.
+- Journal history and Ideas get direct empty-state creation actions. The existing
+  Plan/Calendar add controls and real Finance setup remain. At this checkpoint the
+  then-deferred planning panels used honest unavailable copy; the final completion
+  fix replaces them with Plan | Goals. No fabricated records or fake save actions.
+- Financial deletes now present a native confirmation before invoking the same
+  captured revision-guarded callback. This applies to operations, expected income
+  and obligations; cancellation does nothing. No money/allowance/reopen logic changes.
+  Small Finance text actions have 44pt targets; filters expose selected state and
+  an underline, Finance headers flex for longer text, shared segments gain padding.
+- Calendar notification target opening is implemented as explicitly requested in
+  Slice 7. Canonical owner/event/kind/ID validation, hydrate then live lookup,
+  deleted fallback, duplicate protection and latest-response ordering. Open drafts
+  defer target consumption, and moved/deleted events are checked again afterward.
+  Finance dispatch stays intact; root defers both domains until onboarding closes.
+  This adds Calendar tap navigation to the prior default app-opening baseline;
+  it does not change scheduling or claim an earlier custom route existed.
+
+#### Cross-screen audit
+
+Reviewed all seven reference images and the then-current planning panels,
+Calendar/month/event editor, Records/history/Journal and Idea sheets, Finance
+Overview/Operations/Obligations/setup/sheets and recording/player overlays.
+Existing domain loading/corruption errors and retry paths remain explicit; no
+load error is converted to empty data. Existing editor draft/save identities,
+recording session guards, permission recovery and missing-file states remain.
+
+Plan, Calendar, Journal and Idea modal editors already use SafeAreaView,
+KeyboardAvoidingView, scrolling forms and separate reachable controls. Finance
+setup and forms share that pattern. New onboarding is a safe-area full-screen
+scrolling modal; Settings is scrollable with bottom safe-area padding. AppText
+continues to scale. Selected shared segments expose tab roles/states; completion,
+Finance over-limit and recording have textual/labelled states. Actual keyboard,
+large-text/VoiceOver and small-iPhone layout behavior requires the device checklist;
+static inspection is not a guarantee that every native layout is accepted.
+
+#### Files changed in Slice 7
+
+Paths below are relative to `mobile/` unless stated otherwise.
+
+| Area | Files |
+| --- | --- |
+| Onboarding/preferences | ADD `src/features/product/onboardingStore.ts`, `productRuntime.ts`, `productContent.ts`, `OnboardingGate.tsx` |
+| Settings | ADD `app/settings.tsx`, `src/features/product/SettingsScreen.tsx`, `SettingsButton.tsx`, `settingsController.ts` |
+| Reusable product controls | ADD `src/components/ProductButton.tsx`, `ConfirmDeleteButton.tsx`; CHANGE `src/components/SegmentedControl.tsx` |
+| Root and notification tap | CHANGE `app/_layout.tsx`, `src/services/notifications/useLocalNotificationLifecycle.ts`, `notificationResponseRouter.ts`; ADD `calendarNotificationNavigation.ts` |
+| Screen polish | CHANGE `src/features/plans/PlansScreen.tsx`, `src/features/records/RecordsScreen.tsx`, `src/features/calendar/CalendarScreen.tsx`, `src/features/finance/FinanceForms.tsx`, `FinanceSections.tsx` |
+| Tests | ADD `tests/product-polish.test.mjs` (26 cases); all 537 pre-existing test cases/files unchanged |
+| Documentation | CHANGE root `README.md`, root `tasks/current-task.md`, `MIGRATION_STATUS.md`; ADD `NATIVE_ACCEPTANCE.md` |
+
+Protected baseline hash comparison: no existing domain model/store/parser,
+Finance money/date/allowance behavior, media recorder/repository/player,
+Calendar/Finance planner/reconciler, shared scheduling safety or full-pass queue
+changed. No packages, native configuration, web/backend code or secrets changed.
+New route and onboarding preference are isolated from all domain envelopes.
+
+#### Verification — observed results
+
+| Check | Result |
+| --- | --- |
+| `npm test` | 563 passed / 0 failed (537 baseline + 26 new) |
+| `TZ=Europe/Kyiv npm test` | 563 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 563 passed / 0 failed |
+| `TZ=UTC npm test` | 563 passed / 0 failed |
+| `npm run typecheck` | passed |
+| `npm run lint` | passed |
+| `npx eslint .` | 0 errors; same 3 pre-existing Calendar-test warnings |
+| `npx expo install --check` | dependencies up to date |
+| `npx --yes expo-doctor` | 21/21 checks passed |
+| `npm run export:ios` | passed |
+| root `npm run build` | passed; Sites artifact verified |
+| `git diff --check` | passed |
+| Runtime scope scans | no HTTP/fetch/server/secret runtime, seed data or TODO actions; Telegram only in truthful privacy explanation |
+| `xcrun simctl list devices booted` | unavailable: full Xcode/simctl not installed in this environment; no simulator/device acceptance claimed |
+
+Tests exercise production onboarding persistence/replay/failure and session-only
+recovery, Settings controller stale permission/error handling, actual Settings
+icon navigation and reusable action accessibility, actual delete confirmation,
+Calendar live/deleted/malformed/duplicate/cross-domain dispatch and deferred draft
+resolution. An injected execution of the actual root lifecycle checks cold Finance
+tap deferral through onboarding and subsequent warm Calendar routing without a
+startup prompt. No detached safe scheduler or copied onboarding state machine.
+Logs: `/tmp/workazy-slice7-*.log`.
+
+**Exact native checklist and Before App Store submission report:**
+[`NATIVE_ACCEPTANCE.md`](NATIVE_ACCEPTANCE.md). All device items remain PENDING.
+The bundled icon is still the Expo template (visually verified), so final Workazy
+icon/splash review is an actual release requirement, alongside real iPhone
+acceptance, Apple signing/build, policy/support URLs, privacy/SDK declarations,
+metadata/screenshots and real-device Goals acceptance. No submission, release
+archive, cloud sync, AI or monetization work occurred.
+
+## Final completion fix — Goals and native Tasks contract (2026-09-14)
+
+**All required native product features are CODE COMPLETE. Native iPhone acceptance
+remains PENDING.** The explicit product decision supersedes earlier checkpoint notes:
+standalone Tasks/Assignments are not part of native Workazy. Legacy web/backend
+Assignment contracts and data remain unchanged. Plans navigation is exactly
+**План | Цели** with no placeholder, dead button or hidden Tasks route.
+
+### Goals behavior and data safety
+
+- Real weekly, monthly and yearly Goal create/read/edit/delete, long text, required
+  web-compatible deadline, explicit integer progress, complete/reopen and completed
+  visibility. Completed rows are visible by default; the user can hide/show them.
+- Stable local period identity: Monday `YYYY-MM-DD`, month `YYYY-MM`, year `YYYY`.
+  Existing identity survives edits and restarts; changing period deliberately assigns
+  the current identity for the new period. Local-noon arithmetic avoids elapsed-time,
+  fixed-offset, DST and JavaScript year 0–99 remapping errors.
+- First native schema uses independent `workazy-native-goals-v1` bytes with a strict
+  V1 envelope and monotonic revision. Whole-snapshot validation rejects corrupt JSON,
+  unknown versions/keys, bad dates/timestamps/period identities/progress, duplicate or
+  blank IDs and inconsistent completion. Corrupt/read-failed bytes remain untouched.
+- One process-global Goal store hydrates before mutation, rejects stale sheet revisions
+  and concurrent writes, serializes and re-parses before persisting, publishes only
+  after durable success, and freezes every published state/array/row. Failed writes
+  keep the committed reference and visible editor draft. Expo Crypto supplies IDs.
+- No sample Goals, browser runtime imports, web-to-native import, backend call, package,
+  native configuration, Finance/notification change or destructive Assignment change.
+
+### Files in the final completion fix
+
+- Added `src/types/goal.ts`, `src/storage/goalStorage.ts` and
+  `src/features/goals/{goalDates,goalModel,goalStore,useGoalStore,GoalSheet,GoalsView}.ts(x)`.
+- Added `src/features/plans/plansProduct.ts`; updated `PlansScreen.tsx` to render only
+  Plan and Goals while preserving the existing daily Plan and Settings entry.
+- Added `tests/goals.test.mjs` with 22 production-path/domain cases. The prior 563
+  cases remain present, producing 585 total cases.
+- Updated the native product contract/checklist/status in root `MASTER_PROMPT.md`,
+  `AGENTS.mobile.md`, `DESIGN_SYSTEM.md`, `README.md`, `tasks/mobile-migration.md`,
+  `tasks/current-task.md`, and mobile `README.md`/`NATIVE_ACCEPTANCE.md`/this file.
+  Slice 7 onboarding/help copy did not promise standalone Tasks and needed no change.
+
+### Final verification — observed results
+
+| Check | Result |
+| --- | --- |
+| `npm test` | 585 passed / 0 failed |
+| `TZ=Europe/Kyiv npm test` | 585 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 585 passed / 0 failed |
+| `TZ=UTC npm test` | 585 passed / 0 failed |
+| targeted `node --import tsx --test tests/goals.test.mjs` | 22 passed / 0 failed |
+| `npm run typecheck` | passed |
+| `npm run lint` | passed |
+| `npx eslint .` | 0 errors; 3 pre-existing unused-variable warnings in Calendar tests |
+| `npx expo install --check` | dependencies up to date using the bundled local map; network disabled warning |
+| `npx expo-doctor` / cached `expo-doctor@1.20.4` | run; 19/21 local checks passed, 2 remote metadata/schema checks unavailable because `exp.host`/registry DNS is blocked; same dependency tree previously passed 21/21 in Slice 7 |
+| `npm run export:ios` | passed; fresh iOS bundle exported |
+| root `npm run build` | passed; Sites artifact verified |
+| `git diff --check` | passed |
+
+No simulator/device is available because only Xcode CommandLineTools is installed.
+The manual Goals, notification, recording, keyboard, Dynamic Type and VoiceOver items
+remain open in `NATIVE_ACCEPTANCE.md`; tests and export do not satisfy them.
+
+## Final review blockers fixed — 2026-09-15
+
+This bounded fix addresses only the two final-review blockers. Standalone Tasks
+remains outside the native product. Native/iPhone acceptance remains **PENDING**.
+
+- **Goals save race:** the production sheet captures its instance, entity ID,
+  expected committed revision, raw draft and monotonically increasing draft version
+  under a synchronous submit lock. Queued input remains in the draft; success closes
+  only the current sheet with an unchanged draft version. A retained create becomes
+  an edit of the just-created ID at its successful revision, so explicit resave does
+  not duplicate the goal. Failed writes and stale conflicts keep the exact draft;
+  late completion/delete callbacks cannot affect a replacement sheet. The existing
+  Goal model/parser/store semantics are unchanged.
+- **Plan selected date:** Today / Tomorrow / Date uses the existing Plan store and
+  local-date helpers. The selected date belongs to the Plans workspace, survives
+  Plan/Goals navigation, and stays fixed when relative dates refresh. Past and future
+  items can be read/created/edited/completed/deleted on their original local date.
+  The optional native picker uses existing Calendar date-conversion primitives;
+  validated exact text entry supports 0001–9999 without clamping/remapping. The native
+  picker is limited to 1900–2100; outside that range exact entry remains available.
+  No CalendarEvent is created. Plan date formatting/next-day construction now also
+  preserves years 1–99 correctly.
+
+Exact files changed by this fix (relative to repository root):
+
+- `mobile/src/features/goals/GoalSheet.tsx`
+- `mobile/src/features/goals/GoalsView.tsx`
+- `mobile/src/features/plans/PlanDayView.tsx`
+- `mobile/src/features/plans/PlanDateSheet.tsx` (new)
+- `mobile/src/features/plans/planDates.ts`
+- `mobile/src/features/plans/usePlanDay.ts`
+- `mobile/tests/final-blockers.test.mjs` (new)
+- `mobile/NATIVE_ACCEPTANCE.md`
+- `mobile/MIGRATION_STATUS.md`
+
+The 15 new regressions execute the actual GoalSheet, PlanDayView, PlanDateSheet,
+usePlanDay hook and production stores with injected render/native/IO boundaries.
+Coverage includes delayed new input and explicit resave, double Save, replaced sheet,
+failed write, stale edit/delete, past-date isolation/restart/CRUD, future selection,
+Today/Tomorrow, midnight/foreground, DST/local getters, early years and picker/fallback
+validation. All prior 585 tests remain intact; none were deleted or weakened.
+
+| Check | Observed result |
+| --- | --- |
+| `npm test` | 600 passed / 0 failed |
+| `TZ=Europe/Kyiv npm test` | 600 passed / 0 failed |
+| `TZ=America/Los_Angeles npm test` | 600 passed / 0 failed |
+| `TZ=UTC npm test` | 600 passed / 0 failed |
+| `npm run typecheck` | passed |
+| `npm run lint` | passed |
+| `npx eslint .` | 0 errors; same 3 pre-existing Calendar-test warnings |
+| `npx expo install --check` | dependencies up to date against bundled map; offline warning |
+| `npx expo-doctor` | npm registry DNS unavailable; cached Doctor run recorded separately below |
+| `npm run export:ios` | passed |
+| root `npm run build` | passed; Sites artifact verified |
+
+Manual selected-date, picker, keyboard and Goals save-race checks were added to
+`NATIVE_ACCEPTANCE.md`. No iPhone acceptance is inferred from these automated checks.
+Finance, notification, media, Calendar, Journal, Ideas, onboarding and Settings source
+files were not changed by this fix; earlier uncommitted work remains in the tree.
+
+Cached `expo-doctor@1.20.4`: **19/21 passed**; Expo schema and React Native Directory
+metadata checks could not reach their remote services (`ENOTFOUND exp.host` / directory
+response failure). This is a network-only verification limitation, not an observed
+local dependency/configuration regression. `git diff --check`: passed.

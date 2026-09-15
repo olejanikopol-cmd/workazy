@@ -1,5 +1,5 @@
 /**
- * Relative Today/Tomorrow selection for the daily plan with live refresh.
+ * Today/Tomorrow and explicit local-date selection for the daily plan with live refresh.
  *
  * The selected mode is remembered for the lifetime of the mounted workspace but
  * never persisted. Concrete dates recompute:
@@ -12,13 +12,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { AppState } from 'react-native';
-import { dateForMode, getPlanDates, type PlanDayMode } from './planDates';
+import { dateForMode, getPlanDates, isValidIsoDate, type PlanDayMode } from './planDates';
 
 const PLAN_DATE_RECHECK_MS = 60_000;
 
 export type PlanDay = {
   mode: PlanDayMode;
   setMode: (mode: PlanDayMode) => void;
+  selectDate: (date: string) => boolean;
   /** Concrete local date for the selected mode. */
   date: string;
   today: string;
@@ -28,6 +29,13 @@ export type PlanDay = {
 export function usePlanDay(): PlanDay {
   const [mode, setMode] = useState<PlanDayMode>('today');
   const [dates, setDates] = useState(() => getPlanDates(new Date()));
+  const [selectedDate, setSelectedDate] = useState(dates.today);
+  const selectDate = useCallback((date: string) => {
+    if (!isValidIsoDate(date)) return false;
+    setSelectedDate(date);
+    setMode('selected');
+    return true;
+  }, []);
 
   // Stable: `setDates` returns the previous reference when nothing changed,
   // so periodic calls do not re-render.
@@ -62,7 +70,8 @@ export function usePlanDay(): PlanDay {
   return {
     mode,
     setMode,
-    date: dateForMode(mode, dates.today, dates.tomorrow),
+    selectDate,
+    date: dateForMode(mode, dates.today, dates.tomorrow, selectedDate),
     today: dates.today,
     tomorrow: dates.tomorrow,
   };

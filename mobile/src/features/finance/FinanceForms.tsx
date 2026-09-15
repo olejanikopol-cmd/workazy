@@ -65,7 +65,7 @@ export function FinanceSheetShell({
                 Отмена
               </AppText>
             </Pressable>
-            <AppText variant="section">{title}</AppText>
+            <AppText variant="section" accessibilityRole="header" style={styles.headerTitle}>{title}</AppText>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={primaryLabel}
@@ -244,7 +244,8 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
     gap: spacing.sm,
   },
-  headerButton: { minHeight: touchTarget, justifyContent: 'center', minWidth: 64 },
+  headerTitle: { flex: 1, textAlign: 'center' },
+  headerButton: { minHeight: touchTarget, justifyContent: 'center', minWidth: 64, maxWidth: '30%' },
   content: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xxxl, gap: spacing.lg },
   field: { gap: spacing.xs },
   input: {

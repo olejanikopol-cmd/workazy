@@ -16,7 +16,6 @@ Primary navigation:
 
 Plans contains:
 - Plan
-- Tasks
 - Goals
 
 Records contains:
@@ -83,7 +82,6 @@ Initial reminder strategy:
 
 The existing web domain model includes:
 - PlanTask
-- Assignment
 - Goal
 - JournalEntry
 - JournalMedia
@@ -95,6 +93,10 @@ The existing web domain model includes:
 - FinanceState
 
 Do not casually rename these concepts.
+
+`Assignment` remains a legacy web/backend concept. Standalone Tasks/Assignments are
+intentionally outside the native product and must not be exposed as a mobile tab or
+implemented as mobile CRUD.
 
 ## Backend
 

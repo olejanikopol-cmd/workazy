@@ -1,6 +1,7 @@
 import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useLocalNotificationLifecycle } from '@/services/notifications/useLocalNotificationLifecycle';
+import OnboardingGate from '@/features/product/OnboardingGate';
 import { colors } from '@/theme';
 
 const navigationTheme = {
@@ -32,6 +33,7 @@ export default function RootLayout() {
           contentStyle: { backgroundColor: colors.background },
         }}
       />
+      <OnboardingGate />
     </ThemeProvider>
   );
 }

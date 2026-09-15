@@ -68,7 +68,6 @@ Recommended order:
 
 2. planning segmented tabs
    - Plan
-   - Tasks
    - Goals
 
 3. date selector

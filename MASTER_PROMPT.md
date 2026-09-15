@@ -18,7 +18,6 @@ Workazy is a personal planner with these main sections:
 
 - Plans
   - Plan
-  - Tasks
   - Goals
 - Calendar
 - Records
@@ -38,7 +37,6 @@ Keep:
 - Check/uncheck completion
 - Stable completion state
 - Open long task text
-- Tasks
 - Goals by week / month / year
 - Goal progress
 - Clean minimal daily progress summary
@@ -220,7 +218,6 @@ Bottom navigation:
 
 Planning workspace tabs:
 - Plan
-- Tasks
 - Goals
 
 Records workspace tabs:
@@ -315,7 +312,6 @@ The migration is done only when:
 - mobile app launches on an iPhone simulator/device
 - onboarding exists
 - Plans works
-- Tasks works
 - Goals works
 - Calendar works
 - Journal text entry works

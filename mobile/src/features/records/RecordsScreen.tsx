@@ -9,6 +9,7 @@ import {
   View,
   type ListRenderItemInfo,
 } from 'react-native';
+import ProductButton from '@/components/ProductButton';
 import AppText from '@/components/AppText';
 import Card from '@/components/Card';
 import Screen from '@/components/Screen';
@@ -79,6 +80,22 @@ function nextSheetKey(prefix: string): string {
  * switching between Journal and Ideas. A single FlatList owns vertical scrolling
  * in each list mode (no outer ScrollView around it).
  */
+function RecordsEmpty({ title, description, action }: { title: string; description: string; action?: { label: string; run(): void } }) {
+    return (
+      <View style={styles.empty}>
+        <Ionicons name="document-text-outline" size={28} color={colors.accent} />
+        <AppText variant="body" color="secondary" style={styles.emptyTitle}>
+          {title}
+        </AppText>
+        <AppText variant="meta" color="muted" style={styles.centerText}>
+          {description}
+        </AppText>
+        {action ? <ProductButton label={action.label} onPress={action.run} /> : null}
+      </View>
+    );
+  }
+
+
 export default function RecordsScreen() {
   const journal = useJournalStore();
   const ideasState = useIdeaStore();
@@ -414,19 +431,6 @@ export default function RecordsScreen() {
     );
   }
 
-  function emptyBlock(title: string, description: string) {
-    return (
-      <View style={styles.empty}>
-        <Ionicons name="document-text-outline" size={28} color={colors.accent} />
-        <AppText variant="body" color="secondary" style={styles.emptyTitle}>
-          {title}
-        </AppText>
-        <AppText variant="meta" color="muted" style={styles.centerText}>
-          {description}
-        </AppText>
-      </View>
-    );
-  }
 
   function renderJournalRow({ item }: ListRenderItemInfo<JournalEntry>) {
     return <JournalEntryRow entry={item} disabled={journalBusy} onPress={openJournalReader} />;
@@ -453,7 +457,7 @@ export default function RecordsScreen() {
       </AppText>
       <AppText variant="section">{formatJournalFullDate(today)}</AppText>
       <AppText variant="meta" color="muted" style={styles.composerHint}>
-        Запись сохранится на этом устройстве. Заголовок, настроение и теги — необязательны.
+        Первая запись может быть любой. Текст, голос и видео сохранятся на этом устройстве.
       </AppText>
       <Pressable
         accessibilityRole="button"
@@ -519,8 +523,8 @@ export default function RecordsScreen() {
             writeMode
               ? null
               : journal.entries.length === 0
-                ? emptyBlock('Записей пока нет', 'Создайте первую запись — она сохранится на устройстве.')
-                : emptyBlock('Ничего не найдено', 'Попробуйте изменить запрос поиска.')
+                ? <RecordsEmpty title="Первая запись может быть любой" description="Текст, голос или видео — выберите удобный способ." action={{ label: 'Написать', run: openJournalComposer }} />
+                : <RecordsEmpty title="Ничего не найдено" description="Попробуйте изменить запрос поиска." />
           }
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
@@ -571,8 +575,8 @@ export default function RecordsScreen() {
         }
         ListEmptyComponent={
           ideasState.ideas.length === 0
-            ? emptyBlock('Идей пока нет', 'Добавьте идею — категория и статус помогут потом найти её.')
-            : emptyBlock('Ничего не найдено', 'Снимите фильтры категории или статуса.')
+            ? <RecordsEmpty title="Идей пока нет" description="Сохраните мысль, к которой хотите вернуться." action={{ label: 'Добавить идею', run: openIdeaComposer }} />
+            : <RecordsEmpty title="Ничего не найдено" description="Снимите фильтры категории или статуса." />
         }
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}

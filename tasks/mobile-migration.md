@@ -27,15 +27,18 @@ Acceptance:
 Implement:
 - Today screen
 - Plan
-- Tasks
-- Goals
+- Goals by week / month / year
+- explicit goal progress and complete/reopen behavior
 - completion state
 - date selection
 - add/edit/delete where supported
 - long text viewing
 
 Acceptance:
-- state persists
+- Plan and Goals state persist in their versioned native stores
+- Plans navigation is exactly Plan / Goals; standalone Tasks is outside the native product
+- weekly, monthly and yearly goals support create/read/edit/delete, progress and complete/reopen
+- corrupt Goal storage blocks explicitly without overwriting bytes
 - completion does not randomly reset
 - no hard-coded date
 
