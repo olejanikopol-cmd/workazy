@@ -10,11 +10,12 @@ on:
     paths:
       - .github/workflows/hourly-reminder.yml
       - app/api/telegram/hourly/route.ts
+      - app/api/telegram/weekly-snapshot/route.ts
       - app/api/v1/reminders/tick/route.ts
       - lib/reminder-scheduler.ts
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 concurrency:
@@ -30,31 +31,119 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const crypto = require("crypto");
             const endpoint = "https://personal-planner.uchepir.chatgpt.site/api/telegram/hourly";
+            const weeklyEndpoint = "https://personal-planner.uchepir.chatgpt.site/api/telegram/weekly-snapshot";
+            const weeklySnapshotPath = "weekly/latest.enc.json";
+            const weeklyPublicKey = `-----BEGIN PUBLIC KEY-----
+            MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAwwEtTFJ8z2QPNK9rPLML
+            VVPs95LFLeG2inXdn4lekV7uIkZhK2CVLSqZnZanGaa0ZIg/V2zLLuKp1sYdyYIG
+            taX/L6/5s1TgIlB1mSMTcZroHs/ZLUFN6SElKj1fn9kQwFINBNUKJOqbBWVSAvqE
+            TjaGzHQ9ltUnqv7TXHpuD47u159YMNvkg+kB6+q/tK5rF7BXhxMiCjoehzj8pY5R
+            IRWuyTvqY2blcqfUb1ujtMNhBfQbfUZRJOuCxR5N4xF21EzDYmTAK9StW2+ZhmyU
+            6xqAN1Ocqaq7MeGzRXsX8b4tEC17mTmS5G8/sD2WKZqFDnxrVCd3urjLTnCt02eA
+            ZpD2LUHnYNtXv4llYWttIF7sK2mKeW/SnpIylmGHcyx4hVliFUJwu2WbtKafwGSR
+            ROQdF7cfXGubgz2qLrT189IOSChn/ceM7RaUYgQrgOTjy7hiA2xSw73SzrHqw8O6
+            E1dqePYFghGrl5hTPYuiiiTk69v8iFFoKC1k8fW21/8vAgMBAAE=
+            -----END PUBLIC KEY-----`.replace(/^            /gm, "");
             const pollIntervalMs = 15_000;
             const runUntil = Date.now() + 62 * 60_000;
             let token = "";
             let refreshTokenAt = 0;
             let consecutiveFailures = 0;
             let lastDigestBucket = "";
+            let lastWeeklyDate = "";
+            let weeklyRetryAfter = 0;
 
             const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-            async function post(dueOnly) {
+            async function authToken() {
               if (!token || Date.now() >= refreshTokenAt) {
                 token = await core.getIDToken("workazy-hourly");
                 refreshTokenAt = Date.now() + 4 * 60_000;
               }
+              return token;
+            }
 
+            async function post(dueOnly) {
+              const oidcToken = await authToken();
               const url = dueOnly ? `${endpoint}?dueOnly=true` : endpoint;
               const response = await fetch(url, {
                 method: "POST",
-                headers: { authorization: `Bearer ${token}` },
+                headers: { authorization: `Bearer ${oidcToken}` },
                 signal: AbortSignal.timeout(30_000),
               });
               const body = await response.text();
               if (!response.ok) throw new Error(`${response.status} ${body}`);
               return body ? JSON.parse(body) : {};
+            }
+
+            async function getWeeklySnapshot() {
+              const oidcToken = await authToken();
+              const response = await fetch(weeklyEndpoint, {
+                method: "POST",
+                headers: { authorization: `Bearer ${oidcToken}` },
+                signal: AbortSignal.timeout(30_000),
+              });
+              const body = await response.text();
+              if (!response.ok) throw new Error(`weekly snapshot: ${response.status} ${body}`);
+              const parsed = body ? JSON.parse(body) : {};
+              if (!parsed?.ok || !parsed?.data) throw new Error("weekly snapshot returned no data");
+              return parsed.data;
+            }
+
+            function encryptWeeklySnapshot(snapshot) {
+              const plaintext = Buffer.from(JSON.stringify(snapshot), "utf8");
+              const dataKey = crypto.randomBytes(32);
+              const iv = crypto.randomBytes(12);
+              const cipher = crypto.createCipheriv("aes-256-gcm", dataKey, iv);
+              const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+              const tag = cipher.getAuthTag();
+              const encryptedKey = crypto.publicEncrypt(
+                {
+                  key: weeklyPublicKey,
+                  padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+                  oaepHash: "sha256",
+                },
+                dataKey,
+              );
+              return {
+                version: 1,
+                algorithm: "RSA-OAEP-3072-SHA256+A256GCM",
+                generatedAt: snapshot.generatedAt ?? new Date().toISOString(),
+                period: snapshot.period ?? null,
+                encryptedKey: encryptedKey.toString("base64"),
+                iv: iv.toString("base64"),
+                tag: tag.toString("base64"),
+                ciphertext: ciphertext.toString("base64"),
+              };
+            }
+
+            async function saveWeeklySnapshot(snapshot) {
+              const envelope = encryptWeeklySnapshot(snapshot);
+              const { owner, repo } = context.repo;
+              let sha;
+              try {
+                const existing = await github.rest.repos.getContent({
+                  owner,
+                  repo,
+                  path: weeklySnapshotPath,
+                  ref: "main",
+                });
+                if (!Array.isArray(existing.data)) sha = existing.data.sha;
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+
+              await github.rest.repos.createOrUpdateFileContents({
+                owner,
+                repo,
+                path: weeklySnapshotPath,
+                message: `Update encrypted Workazy weekly snapshot ${snapshot.period?.end ?? ""}`.trim(),
+                content: Buffer.from(JSON.stringify(envelope), "utf8").toString("base64"),
+                branch: "main",
+                ...(sha ? { sha } : {}),
+              });
             }
 
             function kyivClock() {
@@ -63,14 +152,19 @@ jobs:
                 year: "numeric",
                 month: "2-digit",
                 day: "2-digit",
+                weekday: "short",
                 hour: "2-digit",
                 minute: "2-digit",
                 hourCycle: "h23",
               }).formatToParts(new Date());
               const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+              const date = `${values.year}-${values.month}-${values.day}`;
               return {
+                date,
+                weekday: values.weekday,
+                hour: values.hour,
                 minute: values.minute,
-                bucket: `${values.year}-${values.month}-${values.day}T${values.hour}`,
+                bucket: `${date}T${values.hour}`,
               };
             }
 
@@ -94,5 +188,22 @@ jobs:
                 // Telegram outage can recover without waiting for a new job.
                 if (consecutiveFailures % 5 === 0) token = "";
               }
+
+              const weeklyWindow =
+                clock.weekday === "Sun" &&
+                ((clock.hour === "18" && Number(clock.minute) >= 55) || clock.hour === "19");
+              if (weeklyWindow && lastWeeklyDate !== clock.date && Date.now() >= weeklyRetryAfter) {
+                try {
+                  const snapshot = await getWeeklySnapshot();
+                  await saveWeeklySnapshot(snapshot);
+                  lastWeeklyDate = clock.date;
+                  core.info(`Encrypted weekly Workazy snapshot saved for ${snapshot.period?.start}..${snapshot.period?.end}`);
+                } catch (error) {
+                  weeklyRetryAfter = Date.now() + 60_000;
+                  core.warning(`Weekly snapshot failed: ${error.message}`);
+                  token = "";
+                }
+              }
+
               await sleep(Math.max(0, pollIntervalMs - (Date.now() - startedAt)));
             }
